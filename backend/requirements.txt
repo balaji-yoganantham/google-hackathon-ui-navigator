@@ -1,0 +1,19 @@
+# UI Navigator Backend - Python dependencies
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# LangChain + LangGraph + Gemini
+langchain>=0.1.0
+langchain-google-genai>=1.0.0
+langchain-google-vertexai>=1.0.0
+langgraph>=0.0.20
+
+# Browser automation
+playwright>=1.41.0
+
+# Optional: voice (uncomment if using Google Cloud STT/TTS)
+# google-cloud-speech>=2.24.0
+# google-cloud-texttospeech>=2.14.0
