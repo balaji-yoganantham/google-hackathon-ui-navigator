@@ -91,6 +91,12 @@ POP-UP / OVERLAY AWARENESS (check FIRST before planning anything else):
 - If the close button is labeled (e.g. red number 3 is an ✕ button on the modal), decision 1 = {"type":"click","selector":"[data-wayfinder-id=\"3\"]"}, then decisions 2, 3, 4... = actual task steps.
 - Do NOT plan actions on elements hidden behind an overlay — they are not reachable until after dismissal.
 
+REQUIREMENT CHECKLIST RULES (when the task or prompt lists specific remaining requirements):
+✓ The task is NOT complete until ALL requirements are satisfied. If ANY requirement (e.g. filter, find item, get price) is missing from your plan, set taskComplete=false.
+✓ If the prompt includes "REMAINING REQUIREMENTS" or "at least N decisions", you MUST return at least N items in the "decisions" array. Returning fewer is invalid and will be rejected.
+✓ If the prompt includes "REMAINING REQUIREMENTS" or a list of requirements, your plan MUST include at least one step for EACH listed requirement. Do not return a single scroll or single action when multiple requirements remain — that is invalid.
+✓ Minimum steps: if there are N remaining requirements, your plan must contain at least N decisions. One step cannot satisfy multiple distinct requirements (e.g. filter + find deal + price = at least 3 steps).
+
 CRITICAL RULES:
 ✓ SELECTOR: Use ONLY [data-wayfinder-id="N"] where N is the red number on the element. NEVER use aria-label, class, id, or any other selector.
 ✓ Always mention the label number in reasoning (e.g. "Type into search box labeled 10").
@@ -171,7 +177,12 @@ class GeminiClient:
             except Exception as e:
                 last_error = e
                 err_str = str(e).lower()
-                if "empty" in err_str or "json" in err_str or "invalid response" in err_str:
+                # Retry on empty, JSON/parse errors (e.g. "Expecting ',' delimiter", "invalid JSON")
+                is_retryable = (
+                    "empty" in err_str or "json" in err_str or "invalid response" in err_str
+                    or "expecting" in err_str or "delimiter" in err_str or "parse" in err_str
+                )
+                if is_retryable:
                     if attempt < 3:
                         delay = 1.5 * attempt
                         logger.warning(

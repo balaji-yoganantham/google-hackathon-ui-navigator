@@ -23,7 +23,7 @@ from .planner_agent import PlannerAgent
 logger = logging.getLogger(__name__)
 
 MAX_STEPS = 20   # Raised to handle multi-step tasks (e.g. iterate through job listings)
-MAX_REPLANS = 3  # Maximum re-plans triggered by step failures (e.g. mid-task pop-ups)
+MAX_REPLANS = 6  # Re-plans until task is done or budget exhausted (filter + find + price need several rounds)
 SCREENSHOT_OPTS = {"quality": 60, "clip_to_viewport": True}
 
 
@@ -117,26 +117,64 @@ async def _node_plan(state: AgentState) -> dict:
         )
         logger.info("[Orchestrator] Re-planning with failure context (attempt %s/%s)", replan_count, MAX_REPLANS)
     elif replan_after_completion:
-        task_description = (
-            f"{task_description}\n\n"
-            f"[The previous plan only completed PART of the task. The page is now in a new state. "
-            f"Look at the current screenshot and plan ALL REMAINING steps of the original task. "
-            f"Do NOT repeat steps that are already done. "
-            f"Include every outstanding requirement: filtering, finding specific items, checking prices, saving, etc.]"
-        )
+        # Requirement checklist: compute which task requirements are still unmet so the
+        # model cannot ignore them. Force minimum steps = len(remaining).
+        prev_plan = _get_plan(state)
+        task_desc_lower = (state.get("task_description") or "").lower()
+        remaining: list[str] = []
+        if prev_plan:
+            plan_text = (
+                f"{prev_plan.summary or ''} "
+                + " ".join(d.reasoning for d in (prev_plan.decisions or []))
+            ).lower()
+            remaining = [
+                kw for kw in _TASK_REQUIREMENT_KEYWORDS
+                if kw in task_desc_lower and kw not in plan_text
+            ]
+        if remaining:
+            remaining_str = ", ".join(remaining)
+            # Keep prompt short to avoid model empty/malformed responses (token limit, overflow)
+            task_short = (task_description or "")[:380].strip()
+            if len(task_description or "") > 380:
+                task_short += "..."
+            task_description = (
+                f"{task_short}\n\n"
+                f"[Remaining: {remaining_str}. Plan at least {len(remaining)} steps — one per requirement. "
+                f"Look at the screenshot and return valid JSON with 'decisions' array.]"
+            )
+        else:
+            task_short = (task_description or "")[:380].strip()
+            if len(task_description or "") > 380:
+                task_short += "..."
+            task_description = (
+                f"{task_short}\n\n"
+                f"[Previous plan did only part of the task. From the screenshot, plan the remaining steps. Return valid JSON.]"
+            )
 
     try:
         plan = await planner.run(screenshot_bytes, task_description)
     except ValueError as e:
-        logger.warning("[Orchestrator] Planner failed (e.g. empty model response): %s", str(e)[:120])
-        return {
-            **extra_state,
-            "current_screenshot": b64,
-            "plan": None,
-            "decision_index": 0,
-            "status": "failed",
-            "error": str(e)[:200] or "AI could not create a plan for this task",
-        }
+        # Retry once with a shorter prompt to avoid empty/malformed responses from long prompts
+        logger.warning("[Orchestrator] Planner failed, retrying with shorter prompt: %s", str(e)[:80])
+        short_task = (state.get("task_description") or "")[:220].strip()
+        if len(state.get("task_description") or "") > 220:
+            short_task += "..."
+        fallback_prompt = (
+            f"{short_task}\n\n"
+            f"[Current page in screenshot. Plan the next 2-4 actions to continue. Return valid JSON only: decisions, summary, taskComplete.]"
+        )
+        try:
+            plan = await planner.run(screenshot_bytes, fallback_prompt)
+        except ValueError as e2:
+            logger.warning("[Orchestrator] Planner retry also failed: %s", str(e2)[:120])
+            return {
+                **extra_state,
+                "current_screenshot": b64,
+                "plan": None,
+                "decision_index": 0,
+                "status": "failed",
+                "error": str(e2)[:200] or "AI could not create a plan for this task",
+            }
     if not plan.decisions:
         return {
             "current_screenshot": b64,
@@ -145,6 +183,28 @@ async def _node_plan(state: AgentState) -> dict:
             "status": "failed",
             "error": "AI could not create a plan for this task",
         }
+    # If we asked for at least N steps (remaining requirements) but got fewer, retry once
+    # with a stricter prompt so we don't waste an execute cycle on an invalid 1-step plan.
+    if replan_after_completion and remaining and len(plan.decisions) < len(remaining):
+        min_required = len(remaining)
+        stricter = (
+            f"{task_description}\n\n"
+            f"[INVALID: You returned {len(plan.decisions)} decision(s) but there are {min_required} remaining requirements. "
+            f"You MUST return at least {min_required} decisions in the 'decisions' array — one step per requirement. "
+            f"Try again with the same screenshot.]"
+        )
+        logger.warning(
+            "[Orchestrator] Plan had %s steps but %s remaining requirements — retrying planner once",
+            len(plan.decisions),
+            min_required,
+        )
+        try:
+            plan_retry = await planner.run(screenshot_bytes, stricter)
+            if plan_retry.decisions and len(plan_retry.decisions) >= min_required:
+                plan = plan_retry
+                logger.info("[Orchestrator] Retry produced %s decisions", len(plan.decisions))
+        except Exception:
+            pass  # Keep original plan and let safeguard handle it after execution
     logger.info("[Orchestrator] Plan: %s decisions", len(plan.decisions))
     return {
         **extra_state,
