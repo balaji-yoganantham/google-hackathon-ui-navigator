@@ -102,6 +102,30 @@ class BrowserController:
         except (asyncio.TimeoutError, Exception):
             await asyncio.sleep(max_ms / 1000.0)
 
+    async def stabilise_page(self) -> None:
+        """Wait for network quiet and dismiss common overlays before planning screenshots."""
+        await self._with_page_retry(self._stabilise_page_impl, "stabilise_page")
+
+    async def _stabilise_page_impl(self, page: Page, **kwargs: object) -> None:
+        try:
+            await page.wait_for_load_state("networkidle", timeout=3000)
+        except Exception:
+            pass
+        dismiss_selectors = [
+            "[data-test-modal-close-btn]",
+            "button[aria-label='Dismiss']",
+            ".msg-overlay-bubble-header__controls button",
+            "[data-control-name='overlay.dismiss']",
+        ]
+        for sel in dismiss_selectors:
+            try:
+                btn = page.locator(sel).first
+                if await btn.is_visible(timeout=500):
+                    await btn.click(timeout=500)
+                    await asyncio.sleep(0.3)
+            except Exception:
+                continue
+
     async def wait_for_load_after_navigation(self, timeout_ms: int = 12_000) -> None:
         """Wait for the page to finish loading after a navigation-causing action (press Enter, click link, goto)."""
         page = await browser_pool.get_page()

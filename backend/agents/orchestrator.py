@@ -1,6 +1,7 @@
 """Orchestrator: LangGraph StateGraph wiring Planner and Executor with optional re-planning."""
 import base64
 import logging
+import re
 from datetime import datetime
 from typing import Callable, Literal, Optional, TypedDict
 
@@ -42,6 +43,7 @@ class AgentState(TypedDict, total=False):
     replan_count: int   # Number of re-plans triggered by failures so far
     cancelled: bool
     verification_result: dict | None  # VerifierResponse as dict
+    last_plan_decisions: list[str]  # Normalized action/reasoning strings for duplicate guard
     _screenshot_bytes: bytes
 
 
@@ -61,6 +63,92 @@ def _get_verifier() -> VerifierAgent:
     return VerifierAgent()
 
 
+def _steps_summary_for_prompt(steps: list) -> str:
+    """Build a short summary of executed steps for replan/verifier prompts."""
+    if not steps:
+        return "No steps completed yet."
+    lines = []
+    for i, s in enumerate(steps):
+        if isinstance(s, dict):
+            desc = (s.get("reasoning") or s.get("description") or "").strip()
+            res = (s.get("result") or "").strip()
+        else:
+            desc = (getattr(s, "reasoning", "") or getattr(s, "description", "") or "").strip()
+            res = (getattr(s, "result", "") or "").strip()
+        lines.append(f"  {i + 1}. {desc} -> {res}" if res else f"  {i + 1}. {desc}")
+    return "\n".join(lines)
+
+
+async def _translate_requirements_to_hints(
+    screenshot_bytes: bytes,
+    remaining_requirements: list[str],
+) -> list[str]:
+    """Convert semantic verifier requirements into planner-friendly DOM action hints."""
+    if not remaining_requirements:
+        return []
+    requirements_block = "\n".join(f"- {r}" for r in remaining_requirements[:8])
+    prompt = f"""Given this list of incomplete task requirements and the current screenshot, rewrite each requirement as a concrete browser action instruction.
+
+Requirements:
+{requirements_block}
+
+For each requirement output one line like:
+[click] the 'Location' filter dropdown to open location options
+[type] 'Remote' into the location search field
+
+Return only the rewritten list, one per line."""
+    try:
+        client = GeminiClient()
+        text = await client.run_text(screenshot_bytes, prompt)
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        # Strip leading "- " or "N. " if present
+        out = []
+        for ln in lines:
+            s = ln.lstrip("- ").strip()
+            if re.match(r"^\d+[.)]\s*", s):
+                s = re.sub(r"^\d+[.)]\s*", "", s)
+            if s:
+                out.append(s)
+        if out:
+            logger.info("[Orchestrator] Bridge translated %s requirements to hints", len(out))
+            return out
+    except Exception as e:
+        logger.warning("[Orchestrator] Requirement bridge failed: %s — using raw requirements", str(e)[:60])
+    return remaining_requirements
+
+
+def build_replan_prompt(
+    task_description: str,
+    remaining_requirements: list[str],
+    previous_steps_summary: str,
+    current_url: str,
+    min_steps: int,
+) -> str:
+    """Constructive continuation prompt for replanning (replaces adversarial INVALID prompt)."""
+    remaining_block = "\n".join(f"  - {r}" for r in remaining_requirements[:8])
+    url_block = current_url if current_url and current_url not in ("about:blank", "") else "(current page)"
+    return f"""You are a browser automation planner continuing a partially completed task.
+
+ORIGINAL TASK:
+{task_description[:500].strip()}{"..." if len(task_description) > 500 else ""}
+
+CURRENT URL:
+{url_block}
+
+WHAT HAS BEEN DONE:
+{previous_steps_summary}
+
+WHAT STILL NEEDS TO HAPPEN (complete ALL of these):
+{remaining_block}
+
+Rules:
+- Return exactly {min_steps} to 4 actions that directly address the remaining items above (one action per requirement when possible).
+- Do not repeat already-completed steps.
+- Use only actions visible in the current screenshot; use [data-wayfinder-id="N"] for selectors.
+- Return a JSON object with "decisions" array and "summary" string. Set "taskComplete" only when all requirements are satisfied.
+"""
+
+
 async def _node_navigate(state: AgentState) -> dict:
     """Resolve start URL from task (if not provided), then navigate and wait."""
     browser = _get_browser()
@@ -78,18 +166,20 @@ async def _node_plan(state: AgentState) -> dict:
     """Add labels, screenshot, call planner; set plan and decision_index."""
     browser = _get_browser()
     planner = _get_planner()
+    await browser.stabilise_page()
     await browser.add_labels()
     screenshot_bytes = await browser.screenshot(**SCREENSHOT_OPTS)
     await browser.remove_labels()
     b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
 
     task_description = state["task_description"]
+    current_url = ""
 
     # Inject the live browser URL so the planner knows where it already is and
     # won't plan a redundant navigate step to the same page.
     try:
         page = await browser_pool.get_page()
-        current_url = page.url
+        current_url = page.url or ""
         if current_url and current_url not in ("about:blank", ""):
             task_description = f"{task_description}\n\n[Current URL: {current_url}]"
     except Exception:
@@ -112,7 +202,7 @@ async def _node_plan(state: AgentState) -> dict:
             MAX_REPLANS,
         )
 
-    # Highest-priority steering: use verifier feedback to force concrete progress.
+    # Highest-priority steering: use verifier feedback; bridge to actionable hints when possible.
     verification = state.get("verification_result") or {}
     verifier_remaining_raw = verification.get("remaining_requirements", [])
     verifier_remaining = [
@@ -122,6 +212,10 @@ async def _node_plan(state: AgentState) -> dict:
     ]
     if verifier_remaining:
         prioritized = verifier_remaining[:4]
+        # Bridge: translate semantic requirements into planner-friendly DOM hints.
+        translated = await _translate_requirements_to_hints(screenshot_bytes, prioritized)
+        if translated:
+            prioritized = translated[:4]
         min_required = max(2, min(len(prioritized), 4))
         remaining_str = "; ".join(prioritized)
         task_short = (task_description or "")[:420].strip()
@@ -229,26 +323,42 @@ async def _node_plan(state: AgentState) -> dict:
             "error": "AI could not create a plan for this task",
         }
     # If we asked for at least N steps (remaining requirements) but got fewer, retry once
-    # with a stricter prompt so we don't waste an execute cycle on an invalid 1-step plan.
+    # with a constructive continuation prompt (no adversarial INVALID language).
     if remaining and min_required > 0 and len(plan.decisions) < min_required:
-        stricter = (
-            f"{task_description}\n\n"
-            f"[INVALID: You returned {len(plan.decisions)} decision(s) but there are {min_required} remaining requirements. "
-            f"You MUST return at least {min_required} decisions in the 'decisions' array — one step per requirement. "
-            f"Try again with the same screenshot.]"
+        previous_steps_summary = _steps_summary_for_prompt(state.get("steps") or [])
+        constructive_prompt = build_replan_prompt(
+            state.get("task_description") or "",
+            remaining,
+            previous_steps_summary,
+            current_url,
+            min_required,
         )
         logger.warning(
-            "[Orchestrator] Plan had %s steps but %s remaining requirements — retrying planner once",
+            "[Orchestrator] Plan had %s steps but %s remaining requirements — retrying with constructive prompt",
             len(plan.decisions),
             min_required,
         )
         try:
-            plan_retry = await planner.run(screenshot_bytes, stricter)
+            plan_retry = await planner.run(screenshot_bytes, constructive_prompt)
             if plan_retry.decisions and len(plan_retry.decisions) >= min_required:
                 plan = plan_retry
                 logger.info("[Orchestrator] Retry produced %s decisions", len(plan.decisions))
         except Exception:
             pass  # Keep original plan and let safeguard handle it after execution
+    new_signatures = _plan_decisions_to_signatures(plan)
+    last_sigs = state.get("last_plan_decisions") or []
+    if last_sigs and _plans_are_identical(new_signatures, last_sigs):
+        logger.warning("[Orchestrator] New plan is identical to previous — failing to avoid loop")
+        return {
+            **extra_state,
+            "current_screenshot": b64,
+            "plan": None,
+            "decision_index": 0,
+            "status": "failed",
+            "error": "Planner produced duplicate plan; cannot make progress.",
+            "last_plan_decisions": new_signatures,
+            "_screenshot_bytes": screenshot_bytes,
+        }
     logger.info("[Orchestrator] Plan: %s decisions", len(plan.decisions))
     return {
         **extra_state,
@@ -256,8 +366,31 @@ async def _node_plan(state: AgentState) -> dict:
         "plan": plan.model_dump(),
         "decision_index": 0,
         "error": None,  # Clear failure context once a new plan is ready
+        "last_plan_decisions": new_signatures,
         "_screenshot_bytes": screenshot_bytes,
     }
+
+
+def _plan_decisions_to_signatures(plan: GeminiResponse) -> list[str]:
+    """Normalize plan decisions to comparable strings for duplicate detection."""
+    if not plan or not plan.decisions:
+        return []
+    out = []
+    for d in plan.decisions:
+        action_type = getattr(getattr(d, "action", None), "type", "click") if hasattr(d, "action") else (d.get("action") or {}).get("type", "click") if isinstance(d, dict) else "click"
+        reasoning = getattr(d, "reasoning", "") or (d.get("reasoning", "") if isinstance(d, dict) else "")
+        out.append(f"{action_type}: {reasoning}".lower().strip())
+    return out
+
+
+def _plans_are_identical(plan_a: list[str], plan_b: list[str], threshold: float = 0.8) -> bool:
+    """True if two plans share >= threshold fraction of their action descriptions (avoids duplicate loops)."""
+    if not plan_a or not plan_b:
+        return False
+    set_a = {s for s in plan_a if s}
+    set_b = {s for s in plan_b if s}
+    overlap = len(set_a & set_b) / max(len(set_a), len(set_b), 1)
+    return overlap >= threshold
 
 
 def _get_plan(state: AgentState) -> GeminiResponse | None:

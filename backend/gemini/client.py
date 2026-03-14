@@ -147,10 +147,33 @@ class GeminiClient:
             )
             logger.info("GeminiClient initialized (API key) model=%s", self._model)
 
+    def _get_llm_for_temperature(self, temperature: float):
+        """Return an LLM instance with the given temperature (for retry escalation)."""
+        if abs(temperature - 0.2) < 0.01:
+            return self._llm
+        if settings.USE_VERTEX_AI:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
+                from langchain_google_vertexai import ChatVertexAI
+                return ChatVertexAI(
+                    model=self._model,
+                    project=settings.GOOGLE_CLOUD_PROJECT,
+                    location=settings.GOOGLE_CLOUD_LOCATION,
+                    temperature=temperature,
+                    max_output_tokens=2048,
+                )
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        return ChatGoogleGenerativeAI(
+            model=self._model,
+            google_api_key=self._api_key,
+            temperature=temperature,
+            max_retries=0,
+        )
+
     async def plan_task(
         self, screenshot_bytes: bytes, task_description: str
     ) -> GeminiResponse:
-        """Async: screenshot + task → GeminiResponse."""
+        """Async: screenshot + task → GeminiResponse (with exponential backoff + temperature escalation on retry)."""
         base64_str = base64.b64encode(screenshot_bytes).decode("utf-8")
         user_content: list[dict] = [
             {
@@ -168,9 +191,13 @@ class GeminiClient:
             HumanMessage(content=user_content),
         ]
         last_error: Optional[Exception] = None
-        for attempt in range(1, 4):  # up to 3 attempts
+        base_temp = 0.2
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
+            temperature = min(0.5, base_temp + (attempt - 1) * 0.15)
+            llm = self._get_llm_for_temperature(temperature)
             try:
-                response = await self._llm.ainvoke(messages)
+                response = await llm.ainvoke(messages)
                 text = getattr(response, "content", None) or ""
                 if isinstance(text, list):
                     text = "".join(
@@ -185,29 +212,30 @@ class GeminiClient:
             except Exception as e:
                 last_error = e
                 err_str = str(e).lower()
-                # Retry on empty, JSON/parse errors (e.g. "Expecting ',' delimiter", "invalid JSON")
                 is_retryable = (
                     "empty" in err_str or "json" in err_str or "invalid response" in err_str
                     or "expecting" in err_str or "delimiter" in err_str or "parse" in err_str
                 )
-                if is_retryable:
-                    if attempt < 3:
-                        delay = 1.5 * attempt
-                        logger.warning(
-                            "Plan attempt %s/3 failed (%s), retrying in %.1fs...",
-                            attempt,
-                            str(e)[:60],
-                            delay,
-                        )
-                        await asyncio.sleep(delay)
-                    else:
-                        logger.warning(
-                            "Model returned empty or invalid content for task: %s (after 3 attempts)",
-                            task_description[:80],
-                        )
-                        raise ValueError(
-                            "Model returned an empty or invalid response after retries. Try a shorter or simpler task."
-                        ) from last_error
+                if is_retryable and attempt < max_attempts:
+                    wait_s = min(8, 2 ** attempt)
+                    logger.warning(
+                        "Plan attempt %s/%s failed (%s). Retrying in %ss with temperature=%.2f",
+                        attempt,
+                        max_attempts,
+                        str(e)[:60],
+                        wait_s,
+                        temperature + 0.15 if attempt < max_attempts else temperature,
+                    )
+                    await asyncio.sleep(wait_s)
+                elif is_retryable:
+                    logger.warning(
+                        "Model returned empty or invalid content for task: %s (after %s attempts)",
+                        task_description[:80],
+                        max_attempts,
+                    )
+                    raise ValueError(
+                        "Model returned an empty or invalid response after retries. Try a shorter or simpler task."
+                    ) from last_error
                 else:
                     raise
         raise ValueError(
@@ -291,6 +319,23 @@ class GeminiClient:
         raise ValueError(
             "Verifier returned an empty or invalid response after retries."
         ) from last_error
+
+    async def run_text(self, screenshot_bytes: bytes, prompt: str) -> str:
+        """Image + text prompt -> raw text response (for bridge / non-JSON use)."""
+        base64_str = base64.b64encode(screenshot_bytes).decode("utf-8")
+        user_content: list[dict] = [
+            {"type": "image", "base64": base64_str, "mime_type": "image/jpeg"},
+            {"type": "text", "text": prompt},
+        ]
+        messages = [HumanMessage(content=user_content)]
+        response = await self._llm.ainvoke(messages)
+        text = getattr(response, "content", None) or ""
+        if isinstance(text, list):
+            text = "".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in text
+            )
+        return (text or "").strip()
 
     @staticmethod
     def _parse_json_response(raw: str) -> dict:
