@@ -25,6 +25,11 @@ export interface BackendStep {
   timestamp: string;
 }
 
+export interface BackendPlanDecision {
+  actionType: string;
+  reasoning: string;
+}
+
 export interface BackendTask {
   id: string;
   taskDescription: string;
@@ -35,6 +40,10 @@ export interface BackendTask {
   startUrl?: string;
   createdAt: string;
   updatedAt: string;
+  currentNode?: string | null;
+  planSummary?: string | null;
+  planDecisions?: BackendPlanDecision[];
+  currentDecisionIndex?: number;
 }
 
 // ─── Transformer helpers ──────────────────────────────────────────────────────
@@ -69,6 +78,10 @@ export function mapBackendTask(raw: BackendTask) {
       screenshotUrl: s.screenshot ? toDataUrl(s.screenshot) : undefined,
       timestamp: s.timestamp || new Date().toISOString(),
     })),
+    currentNode: raw.currentNode ?? undefined,
+    planSummary: raw.planSummary ?? undefined,
+    planDecisions: raw.planDecisions ?? [],
+    currentDecisionIndex: raw.currentDecisionIndex ?? 0,
   };
 }
 

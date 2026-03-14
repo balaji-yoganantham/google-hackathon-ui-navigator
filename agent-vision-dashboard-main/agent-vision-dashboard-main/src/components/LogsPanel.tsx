@@ -5,6 +5,7 @@ import { useAgentStore, ExecutionStep, AgentTask } from "@/store/agentStore";
 import {
   CheckCircle2, XCircle, Clock, MousePointer, Type, ArrowDown,
   Navigation, Timer, FileSearch, ChevronDown, ChevronRight, Play,
+  Circle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -27,6 +28,80 @@ const actionColors: Record<string, string> = {
   wait: 'bg-muted text-muted-foreground border-border',
   extract: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
 };
+
+// ── ActivityFeed (live plan + phase) ──────────────────────────────────────────
+
+function ActivityFeed({ task }: { task: AgentTask }) {
+  const node = task.currentNode ?? '';
+  const planDecisions = task.planDecisions ?? [];
+  const currentIdx = task.currentDecisionIndex ?? 0;
+  const total = planDecisions.length;
+
+  const phaseLabel =
+    node === 'navigate'
+      ? 'Navigating'
+      : node === 'plan'
+        ? 'Planning (taking screenshot…)'
+        : node === 'execute_step' && total > 0
+          ? `Executing step ${currentIdx + 1} of ${total}`
+          : node === 'execute_step'
+            ? 'Executing'
+            : 'Running';
+
+  const showPlan = planDecisions.length > 0 || (task.planSummary ?? '').length > 0;
+
+  return (
+    <div className="space-y-2 mb-3">
+      <div className="flex items-center gap-2">
+        <Badge variant="outline" className="text-[10px] gap-1 px-2 py-0.5 h-6 bg-primary/10 text-primary border-primary/30">
+          <Play className="h-3 w-3 animate-pulse" />
+          {phaseLabel}
+        </Badge>
+      </div>
+      {showPlan && (
+        <>
+          {task.planSummary && (
+            <p className="text-[11px] text-muted-foreground leading-relaxed">
+              Plan: {task.planSummary}
+            </p>
+          )}
+          {planDecisions.length > 0 && (
+            <div className="rounded-md bg-secondary/30 border border-border p-2 space-y-1.5">
+              {planDecisions.map((d, i) => {
+                const Icon = actionIcons[d.actionType] || MousePointer;
+                const done = i < currentIdx;
+                const current = i === currentIdx;
+                return (
+                  <div
+                    key={i}
+                    className={`flex items-start gap-2 text-[11px] ${current ? 'text-primary' : done ? 'text-muted-foreground' : 'text-muted-foreground/80'}`}
+                  >
+                    <span className="shrink-0 mt-0.5">
+                      {done && <CheckCircle2 className="h-3.5 w-3.5 text-success" />}
+                      {current && <Play className="h-3.5 w-3.5 text-primary animate-pulse" />}
+                      {!done && !current && <Circle className="h-3.5 w-3.5" />}
+                    </span>
+                    <span className="font-mono text-[10px] shrink-0">
+                      {i + 1}. [{d.actionType}]
+                    </span>
+                    <span className="flex-1 min-w-0 leading-relaxed">{d.reasoning}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+      {showPlan && (
+        <div className="border-t border-border pt-2 mt-2">
+          <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide mb-2">
+            Completed steps
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // ── StepCard ─────────────────────────────────────────────────────────────────
 
@@ -204,6 +279,7 @@ export function LogsPanel() {
       <div className="flex-1 overflow-y-auto p-3 space-y-2">
         {activeTab === 'current' ? (
           <>
+            {task && <ActivityFeed task={task} />}
             {showSkeleton && (
               <>
                 <StepSkeleton />
@@ -218,7 +294,7 @@ export function LogsPanel() {
                 onSelect={(url) => setSelectedStepScreenshot(url)}
               />
             ))}
-            {!isLoading && steps.length === 0 && (
+            {!isLoading && steps.length === 0 && !task && (
               <div className="flex items-center justify-center h-full">
                 <p className="text-xs text-muted-foreground">No steps yet</p>
               </div>

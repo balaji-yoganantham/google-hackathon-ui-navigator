@@ -15,6 +15,11 @@ export interface ExecutionStep {
   timestamp: string;
 }
 
+export interface PlanDecision {
+  actionType: string;
+  reasoning: string;
+}
+
 export interface AgentTask {
   sessionId: string;
   taskDescription: string;
@@ -25,6 +30,10 @@ export interface AgentTask {
   error?: string;
   startedAt?: string;
   completedAt?: string;
+  currentNode?: string;
+  planSummary?: string;
+  planDecisions?: PlanDecision[];
+  currentDecisionIndex?: number;
 }
 
 interface AgentStore {
@@ -107,6 +116,10 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         error: mapped.error,
         taskDescription: mapped.taskDescription || state.task.taskDescription,
         startUrl: mapped.startUrl ?? state.task.startUrl,
+        currentNode: mapped.currentNode,
+        planSummary: mapped.planSummary,
+        planDecisions: mapped.planDecisions ?? [],
+        currentDecisionIndex: mapped.currentDecisionIndex ?? 0,
       },
     };
   }),

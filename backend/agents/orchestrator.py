@@ -127,9 +127,18 @@ async def _node_plan(state: AgentState) -> dict:
                 f"{prev_plan.summary or ''} "
                 + " ".join(d.reasoning for d in (prev_plan.decisions or []))
             ).lower()
+            # Also include all executed steps so we don't re-flag already-done requirements
+            prior_steps = state.get("steps") or []
+            steps_text = " ".join(
+                (s.get("description", "") + " " + s.get("reasoning", "") + " " + s.get("result", ""))
+                if isinstance(s, dict)
+                else (getattr(s, "description", "") + " " + getattr(s, "reasoning", "") + " " + getattr(s, "result", ""))
+                for s in prior_steps
+            ).lower()
+            covered_text = plan_text + " " + steps_text
             remaining = [
                 kw for kw in _TASK_REQUIREMENT_KEYWORDS
-                if kw in task_desc_lower and kw not in plan_text
+                if kw in task_desc_lower and kw not in covered_text
             ]
         if remaining:
             remaining_str = ", ".join(remaining)
@@ -363,7 +372,7 @@ _DISMISS_KEYWORDS = (
 # has unmet requirements and needs a replan.
 _TASK_REQUIREMENT_KEYWORDS = (
     "filter", "4 star", "rating", "badge", "deal", "limited time",
-    "price", "save", "bookmark", "find the", "sort by",
+    "price", "save", "bookmark", "sort by",
     "password", "username",
 )
 
@@ -407,10 +416,19 @@ def _route_after_execute(state: AgentState) -> Literal["execute_step", "plan", "
             # Safeguard B: task has unmet requirements. Run on every completion
             # until replan budget is exhausted so we keep replanning until the
             # full task is done (e.g. filter + find deal + price).
+            # Include ALL executed steps' text so that keywords covered in prior
+            # plan rounds are not re-flagged as unmet on subsequent completions.
             task_desc_lower = (state.get("task_description") or "").lower()
+            steps_text = " ".join(
+                (s.get("description", "") + " " + s.get("reasoning", "") + " " + s.get("result", ""))
+                if isinstance(s, dict)
+                else (getattr(s, "description", "") + " " + getattr(s, "reasoning", "") + " " + getattr(s, "result", ""))
+                for s in steps
+            ).lower()
+            covered_text = plan_text + " " + steps_text
             unmet = [
                 kw for kw in _TASK_REQUIREMENT_KEYWORDS
-                if kw in task_desc_lower and kw not in plan_text
+                if kw in task_desc_lower and kw not in covered_text
             ]
             if unmet:
                 logger.info(
@@ -497,6 +515,7 @@ async def run_task(
     async for event in graph.astream(initial):
         for node_name, node_state in event.items():
             # Merge node output into our task view
+            task.currentNode = node_name
             if "steps" in node_state:
                 task.steps = node_state["steps"]
             if "current_screenshot" in node_state:
@@ -507,6 +526,17 @@ async def run_task(
                 task.error = node_state["error"]
             if "start_url" in node_state:
                 task.startUrl = node_state["start_url"]
+            if "plan" in node_state:
+                plan_obj = node_state["plan"]
+                if plan_obj is not None:
+                    task.planSummary = plan_obj.get("summary", "") if isinstance(plan_obj, dict) else getattr(plan_obj, "summary", "") or ""
+                    decisions = plan_obj.get("decisions", []) if isinstance(plan_obj, dict) else getattr(plan_obj, "decisions", []) or []
+                    task.planDecisions = [
+                        {"actionType": (d.get("action") or {}).get("type", "click") if isinstance(d, dict) else getattr(getattr(d, "action", None), "type", "click"), "reasoning": d.get("reasoning", "") if isinstance(d, dict) else getattr(d, "reasoning", "")}
+                        for d in decisions
+                    ]
+            if "decision_index" in node_state:
+                task.currentDecisionIndex = node_state["decision_index"]
         _emit()
         if get_cancelled and get_cancelled():
             task.status = "cancelled"

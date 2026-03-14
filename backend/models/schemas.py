@@ -58,6 +58,11 @@ class TaskExecution(BaseModel):
     startUrl: Optional[str] = None
     createdAt: datetime = Field(default_factory=datetime.utcnow)
     updatedAt: datetime = Field(default_factory=datetime.utcnow)
+    # Live activity feed: current phase and plan visibility
+    currentNode: Optional[str] = None  # "navigate" | "plan" | "execute_step"
+    planSummary: Optional[str] = None
+    planDecisions: list[dict] = Field(default_factory=list)  # [{actionType, reasoning}, ...]
+    currentDecisionIndex: int = 0
 
 
 class GeminiResponse(BaseModel):
