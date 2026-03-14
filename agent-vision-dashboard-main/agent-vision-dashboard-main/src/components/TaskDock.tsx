@@ -1,16 +1,17 @@
-import { Mic, Send, Square, Loader2 } from "lucide-react";
+import { Mic, Send, Square, Loader2, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useAgentStore } from "@/store/agentStore";
-import { executeTask, cancelTask, createSSEStream, pollStatus, type BackendTask } from "@/lib/api";
+import { executeTask, continueTask, cancelTask, createSSEStream, pollStatus, type BackendTask } from "@/lib/api";
 import { useCallback, useRef } from "react";
 
 export function TaskDock() {
   const {
-    taskDescription, isLoading, isRecording, task,
+    taskDescription, isLoading, isRecording, task, continuingSessionId,
     setTaskDescription, setIsLoading, setIsRecording,
     setTask, updateFromBackendTask, completeTask, failTask, cancelTask: storeCancelTask,
+    clearContinue,
   } = useAgentStore();
 
   const recognitionRef = useRef<any>(null);
@@ -28,7 +29,7 @@ export function TaskDock() {
   const startPolling = useCallback((sessionId: string) => {
     if (pollRef.current) return;
     let attempts = 0;
-    const MAX = 300; // 10 min at 2s intervals
+    const MAX = 300;
 
     pollRef.current = setInterval(async () => {
       if (attempts++ >= MAX) { stopPolling(); setIsLoading(false); return; }
@@ -46,76 +47,88 @@ export function TaskDock() {
           stopPolling();
         }
       } catch {
-        // ignore transient errors — keep polling
+        // ignore transient errors
       }
     }, 2000);
   }, [stopPolling, setIsLoading, updateFromBackendTask, completeTask, failTask, storeCancelTask]);
+
+  // ── SSE helper shared by execute and continue ─────────────────────────────
+  const attachStream = useCallback((sessionId: string) => {
+    cleanupSSERef.current = createSSEStream(
+      sessionId,
+      (raw: BackendTask) => {
+        updateFromBackendTask(raw);
+        if (raw.status === 'completed') {
+          completeTask();
+          cleanupSSERef.current?.();
+          cleanupSSERef.current = null;
+        } else if (raw.status === 'failed') {
+          failTask(raw.error || 'Task failed');
+          cleanupSSERef.current?.();
+          cleanupSSERef.current = null;
+        } else if (raw.status === 'cancelled') {
+          storeCancelTask();
+          cleanupSSERef.current?.();
+          cleanupSSERef.current = null;
+        }
+      },
+      () => {
+        console.warn('[TaskDock] SSE failed — falling back to polling');
+        cleanupSSERef.current = null;
+        startPolling(sessionId);
+      },
+    );
+  }, [updateFromBackendTask, completeTask, failTask, storeCancelTask, startPolling]);
 
   // ── Send ───────────────────────────────────────────────────────────────────
   const handleSend = useCallback(async () => {
     if (!taskDescription || isLoading) return;
 
-    // Reset any previous streams/polls
     cleanupSSERef.current?.();
     stopPolling();
     setIsLoading(true);
 
-    // Optimistic task placeholder while waiting for backend
-    setTask({
-      sessionId: '',
-      taskDescription,
-      status: 'running',
-      steps: [],
-      startedAt: new Date().toISOString(),
-    });
-
     try {
-      const { sessionId, task: taskData } = await executeTask(taskDescription);
-
-      // Update task with real session ID (startUrl filled by backend when resolved)
-      setTask({
-        sessionId,
-        taskDescription: taskData.taskDescription || taskDescription,
-        startUrl: taskData.startUrl,
-        status: 'running',
-        steps: [],
-        startedAt: new Date().toISOString(),
-      });
-
-      // ── Primary: SSE stream ──────────────────────────────────────────────
-      cleanupSSERef.current = createSSEStream(
-        sessionId,
-        (raw: BackendTask) => {
-          // Full task object arrives — sync store
-          updateFromBackendTask(raw);
-
-          if (raw.status === 'completed') {
-            completeTask();
-            cleanupSSERef.current?.();
-            cleanupSSERef.current = null;
-          } else if (raw.status === 'failed') {
-            failTask(raw.error || 'Task failed');
-            cleanupSSERef.current?.();
-            cleanupSSERef.current = null;
-          } else if (raw.status === 'cancelled') {
-            storeCancelTask();
-            cleanupSSERef.current?.();
-            cleanupSSERef.current = null;
-          }
-        },
-        () => {
-          // ── Fallback: polling when SSE fails ───────────────────────────
-          console.warn('[TaskDock] SSE failed — falling back to polling');
-          cleanupSSERef.current = null;
-          startPolling(sessionId);
-        },
-      );
+      if (continuingSessionId) {
+        // ── Continue from a previous session ──────────────────────────────
+        const { sessionId, task: taskData } = await continueTask(continuingSessionId, taskDescription);
+        setTask({
+          sessionId,
+          taskDescription: taskData.taskDescription || taskDescription,
+          startUrl: taskData.startUrl,
+          status: 'running',
+          steps: taskData.steps?.length
+            ? (taskData.steps as any)
+            : [],
+          startedAt: new Date().toISOString(),
+        });
+        attachStream(sessionId);
+      } else {
+        // ── Fresh task ────────────────────────────────────────────────────
+        setTask({
+          sessionId: '',
+          taskDescription,
+          status: 'running',
+          steps: [],
+          startedAt: new Date().toISOString(),
+        });
+        const { sessionId, task: taskData } = await executeTask(taskDescription);
+        setTask({
+          sessionId,
+          taskDescription: taskData.taskDescription || taskDescription,
+          startUrl: taskData.startUrl,
+          status: 'running',
+          steps: [],
+          startedAt: new Date().toISOString(),
+        });
+        attachStream(sessionId);
+      }
     } catch (err: any) {
       failTask(err.message || 'Failed to start task');
       stopPolling();
     }
-  }, [taskDescription, isLoading, stopPolling, startPolling,
-      setIsLoading, setTask, updateFromBackendTask, completeTask, failTask, storeCancelTask]);
+  }, [taskDescription, isLoading, continuingSessionId, stopPolling, attachStream,
+      setIsLoading, setTask, failTask]);
 
   // ── Stop ───────────────────────────────────────────────────────────────────
   const handleStop = useCallback(async () => {
@@ -161,10 +174,29 @@ export function TaskDock() {
   return (
     <div className="p-4 pt-2">
       <div className="rounded-lg bg-card border border-border p-4 space-y-3">
+
+        {/* Continue mode banner */}
+        {continuingSessionId && (
+          <div className="flex items-center gap-2 rounded-md bg-primary/10 border border-primary/30 px-3 py-2">
+            <RotateCcw className="h-3.5 w-3.5 text-primary shrink-0" />
+            <p className="text-[11px] text-primary flex-1">
+              Continuing from previous session
+              <span className="ml-1 font-mono opacity-70">#{continuingSessionId.slice(0, 8)}</span>
+            </p>
+            <button
+              onClick={clearContinue}
+              className="text-primary/60 hover:text-primary transition-colors"
+              title="Cancel continue mode"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
         <div className="space-y-1.5">
           <div className="flex items-center gap-2">
             <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-              Task Description
+              {continuingSessionId ? 'Follow-up Instruction' : 'Task Description'}
             </label>
             {isRecording && (
               <Badge className="bg-destructive/20 text-destructive border-destructive/30 text-[10px] gap-1 font-mono">
@@ -174,7 +206,11 @@ export function TaskDock() {
             )}
           </div>
           <Textarea
-            placeholder="Describe what you want the agent to do..."
+            placeholder={
+              continuingSessionId
+                ? "What should the agent do next?"
+                : "Describe what you want the agent to do..."
+            }
             value={taskDescription}
             onChange={(e) => setTaskDescription(e.target.value)}
             className="text-xs bg-secondary border-border min-h-[60px] resize-none"
@@ -198,12 +234,14 @@ export function TaskDock() {
             size="sm"
             onClick={handleSend}
             disabled={isLoading || !taskDescription}
-            className="gap-1.5 text-xs flex-1"
+            className={`gap-1.5 text-xs flex-1 ${continuingSessionId ? 'bg-primary/80 hover:bg-primary' : ''}`}
           >
             {isLoading
               ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              : <Send className="h-3.5 w-3.5" />}
-            {isLoading ? 'Running...' : 'Send'}
+              : continuingSessionId
+                ? <RotateCcw className="h-3.5 w-3.5" />
+                : <Send className="h-3.5 w-3.5" />}
+            {isLoading ? 'Running...' : continuingSessionId ? 'Continue' : 'Send'}
           </Button>
 
           <Button

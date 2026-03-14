@@ -34,12 +34,21 @@ interface AgentStore {
   taskDescription: string;
   activeTab: 'current' | 'history';
   history: AgentTask[];
+  /** Screenshot of the step the user clicked — shown in the main viewport. */
+  selectedStepScreenshot: string | null;
+  /** Session ID being continued from history (null = fresh execute mode). */
+  continuingSessionId: string | null;
 
   setTaskDescription: (desc: string) => void;
   setIsLoading: (loading: boolean) => void;
   setIsRecording: (recording: boolean) => void;
   setTask: (task: AgentTask | null) => void;
   setActiveTab: (tab: 'current' | 'history') => void;
+  setSelectedStepScreenshot: (url: string | null) => void;
+  /** Enter continue-mode for a past task: pre-fills session ID. */
+  startContinue: (task: AgentTask) => void;
+  /** Exit continue-mode (back to fresh execute). */
+  clearContinue: () => void;
   addStep: (step: ExecutionStep) => void;
   updateScreenshot: (url: string) => void;
   /**
@@ -60,12 +69,23 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   taskDescription: '',
   activeTab: 'current',
   history: [],
+  selectedStepScreenshot: null,
+  continuingSessionId: null,
 
   setTaskDescription: (desc) => set({ taskDescription: desc }),
   setIsLoading: (loading) => set({ isLoading: loading }),
   setIsRecording: (recording) => set({ isRecording: recording }),
   setTask: (task) => set({ task }),
   setActiveTab: (tab) => set({ activeTab: tab }),
+  setSelectedStepScreenshot: (url) => set({ selectedStepScreenshot: url }),
+
+  startContinue: (task) => set({
+    continuingSessionId: task.sessionId,
+    taskDescription: '',
+    activeTab: 'current',
+  }),
+
+  clearContinue: () => set({ continuingSessionId: null, taskDescription: '' }),
 
   addStep: (step) => set((state) => ({
     task: state.task ? { ...state.task, steps: [...state.task.steps, step] } : state.task,
@@ -98,19 +118,30 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     return {
       task: completed,
       isLoading: false,
+      continuingSessionId: null,
       history: completed ? [completed, ...state.history] : state.history,
     };
   }),
 
-  failTask: (error) => set((state) => ({
-    task: state.task ? { ...state.task, status: 'failed' as const, error } : state.task,
-    isLoading: false,
-  })),
+  failTask: (error) => set((state) => {
+    const failed = state.task ? { ...state.task, status: 'failed' as const, error } : null;
+    return {
+      task: failed,
+      isLoading: false,
+      continuingSessionId: null,
+      history: failed ? [failed, ...state.history] : state.history,
+    };
+  }),
 
-  cancelTask: () => set((state) => ({
-    task: state.task ? { ...state.task, status: 'cancelled' as const } : state.task,
-    isLoading: false,
-  })),
+  cancelTask: () => set((state) => {
+    const cancelled = state.task ? { ...state.task, status: 'cancelled' as const } : null;
+    return {
+      task: cancelled,
+      isLoading: false,
+      continuingSessionId: null,
+      history: cancelled ? [cancelled, ...state.history] : state.history,
+    };
+  }),
 
-  reset: () => set({ task: null, isLoading: false, taskDescription: '' }),
+  reset: () => set({ task: null, isLoading: false, taskDescription: '', continuingSessionId: null, selectedStepScreenshot: null }),
 }));

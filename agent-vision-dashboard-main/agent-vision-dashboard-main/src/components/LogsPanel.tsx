@@ -1,7 +1,14 @@
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useAgentStore, ExecutionStep } from "@/store/agentStore";
-import { CheckCircle2, XCircle, Clock, MousePointer, Type, ArrowDown, Navigation, Timer, FileSearch } from "lucide-react";
+import { useAgentStore, ExecutionStep, AgentTask } from "@/store/agentStore";
+import {
+  CheckCircle2, XCircle, Clock, MousePointer, Type, ArrowDown,
+  Navigation, Timer, FileSearch, ChevronDown, ChevronRight, Play,
+} from "lucide-react";
+import { Button } from "@/components/ui/button";
+
+// ── Action metadata ──────────────────────────────────────────────────────────
 
 const actionIcons: Record<string, any> = {
   click: MousePointer,
@@ -21,11 +28,16 @@ const actionColors: Record<string, string> = {
   extract: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
 };
 
-function StepCard({ step }: { step: ExecutionStep }) {
+// ── StepCard ─────────────────────────────────────────────────────────────────
+
+function StepCard({ step, onSelect }: { step: ExecutionStep; onSelect?: (url: string) => void }) {
   const Icon = actionIcons[step.actionType] || MousePointer;
 
   return (
-    <div className="slide-in rounded-md bg-secondary/50 border border-border p-3 space-y-2">
+    <div
+      className={`slide-in rounded-md bg-secondary/50 border border-border p-3 space-y-2 ${step.screenshotUrl ? 'cursor-pointer hover:border-primary/50 transition-colors' : ''}`}
+      onClick={() => step.screenshotUrl && onSelect?.(step.screenshotUrl)}
+    >
       <div className="flex items-center gap-2">
         <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0 h-5 min-w-[28px] justify-center">
           {step.stepNumber}
@@ -42,15 +54,22 @@ function StepCard({ step }: { step: ExecutionStep }) {
       </div>
       <p className="text-xs font-mono text-muted-foreground leading-relaxed">{step.reasoning}</p>
       {step.screenshotUrl && (
-        <img
-          src={step.screenshotUrl}
-          alt={`Step ${step.stepNumber}`}
-          className="w-full h-16 object-cover rounded border border-border hover:h-32 transition-all duration-150 cursor-pointer"
-        />
+        <div className="relative">
+          <img
+            src={step.screenshotUrl}
+            alt={`Step ${step.stepNumber}`}
+            className="w-full h-16 object-cover rounded border border-border"
+          />
+          <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity bg-black/40 rounded">
+            <span className="text-[10px] text-white font-medium">Click to expand</span>
+          </div>
+        </div>
       )}
     </div>
   );
 }
+
+// ── StepSkeleton ─────────────────────────────────────────────────────────────
 
 function StepSkeleton() {
   return (
@@ -65,8 +84,90 @@ function StepSkeleton() {
   );
 }
 
+// ── HistoryTaskCard ───────────────────────────────────────────────────────────
+
+function HistoryTaskCard({ task }: { task: AgentTask }) {
+  const [expanded, setExpanded] = useState(false);
+  const { setSelectedStepScreenshot, startContinue, setActiveTab } = useAgentStore();
+
+  const statusColor =
+    task.status === 'completed' ? 'bg-success/20 text-success border-success/30' :
+    task.status === 'failed' ? 'bg-destructive/20 text-destructive border-destructive/30' :
+    'bg-muted text-muted-foreground border-border';
+
+  const handleContinue = () => {
+    startContinue(task);
+    setActiveTab('current');
+  };
+
+  return (
+    <div className="rounded-md bg-secondary/50 border border-border overflow-hidden">
+      {/* Header row */}
+      <div
+        className="flex items-center gap-2 p-3 cursor-pointer hover:bg-secondary/80 transition-colors select-none"
+        onClick={() => setExpanded((v) => !v)}
+      >
+        {expanded
+          ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-medium text-foreground truncate">{task.taskDescription}</p>
+          {task.startUrl && (
+            <p className="text-[10px] font-mono text-muted-foreground truncate mt-0.5">{task.startUrl}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <Badge variant="outline" className="text-[9px] font-mono px-1 py-0 h-4">
+            {task.steps.length}
+          </Badge>
+          <Badge className={`text-[9px] px-1.5 py-0 h-4 ${statusColor}`}>
+            {task.status}
+          </Badge>
+        </div>
+      </div>
+
+      {/* Expanded: steps + continue button */}
+      {expanded && (
+        <div className="border-t border-border">
+          {/* Continue button */}
+          {(task.status === 'completed' || task.status === 'failed' || task.status === 'cancelled') && (
+            <div className="px-3 py-2 border-b border-border">
+              <Button
+                size="sm"
+                variant="outline"
+                className="w-full gap-1.5 text-xs h-7"
+                onClick={handleContinue}
+              >
+                <Play className="h-3 w-3" />
+                Continue from this session
+              </Button>
+            </div>
+          )}
+
+          {/* Step list */}
+          <div className="p-3 space-y-2">
+            {task.steps.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground text-center py-2">No steps recorded</p>
+            ) : (
+              task.steps.map((step) => (
+                <StepCard
+                  key={step.stepNumber}
+                  step={step}
+                  onSelect={(url) => setSelectedStepScreenshot(url)}
+                />
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── LogsPanel ─────────────────────────────────────────────────────────────────
+
 export function LogsPanel() {
-  const { task, isLoading, activeTab, setActiveTab, history } = useAgentStore();
+  const { task, isLoading, activeTab, setActiveTab, history, setSelectedStepScreenshot } = useAgentStore();
   const steps = activeTab === 'current' ? (task?.steps || []) : [];
   const showSkeleton = isLoading && steps.length === 0;
 
@@ -90,6 +191,11 @@ export function LogsPanel() {
                 {task.steps.length}
               </Badge>
             )}
+            {tab === 'history' && history.length > 0 && (
+              <Badge variant="outline" className="ml-1.5 text-[9px] px-1 py-0 h-4">
+                {history.length}
+              </Badge>
+            )}
           </button>
         ))}
       </div>
@@ -106,7 +212,11 @@ export function LogsPanel() {
               </>
             )}
             {steps.map((step) => (
-              <StepCard key={step.stepNumber} step={step} />
+              <StepCard
+                key={step.stepNumber}
+                step={step}
+                onSelect={(url) => setSelectedStepScreenshot(url)}
+              />
             ))}
             {!isLoading && steps.length === 0 && (
               <div className="flex items-center justify-center h-full">
@@ -118,22 +228,11 @@ export function LogsPanel() {
           <>
             {history.length === 0 ? (
               <div className="flex items-center justify-center h-full">
-                <p className="text-xs text-muted-foreground">No history</p>
+                <p className="text-xs text-muted-foreground">No history yet</p>
               </div>
             ) : (
               history.map((t, i) => (
-                <div key={i} className="rounded-md bg-secondary/50 border border-border p-3 space-y-1">
-                  <div className="flex items-center justify-between">
-                    <Badge variant="outline" className="text-[10px] font-mono">
-                      {t.steps.length} steps
-                    </Badge>
-                    <Badge className={t.status === 'completed' ? 'bg-success/20 text-success border-success/30 text-[10px]' : 'bg-destructive/20 text-destructive border-destructive/30 text-[10px]'}>
-                      {t.status}
-                    </Badge>
-                  </div>
-                  <p className="text-xs text-muted-foreground truncate">{t.taskDescription}</p>
-                  <p className="text-[10px] font-mono text-muted-foreground truncate">{t.startUrl}</p>
-                </div>
+                <HistoryTaskCard key={t.sessionId || i} task={t} />
               ))
             )}
           </>

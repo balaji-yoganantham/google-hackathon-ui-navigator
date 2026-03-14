@@ -87,6 +87,19 @@ export async function executeTask(taskDescription: string) {
   return res.json() as Promise<{ sessionId: string; task: BackendTask }>;
 }
 
+export async function continueTask(sessionId: string, instruction: string) {
+  const res = await fetch(`${API_BASE}/api/agent/continue/${sessionId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instruction }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || 'Failed to continue task');
+  }
+  return res.json() as Promise<{ sessionId: string; task: BackendTask }>;
+}
+
 export async function cancelTask(sessionId: string) {
   const res = await fetch(`${API_BASE}/api/agent/cancel/${sessionId}`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to cancel task');
