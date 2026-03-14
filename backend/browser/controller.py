@@ -141,6 +141,7 @@ class BrowserController:
             el = await page.query_selector(selector)
             if not el:
                 raise ValueError(f"Element not found: {selector}")
+            await el.scroll_into_view_if_needed()
             await el.click(delay=50, force=True)
             return f"Clicked on {selector}"
 
@@ -164,12 +165,16 @@ class BrowserController:
             )
 
             if directly_fillable:
+                # Scroll the element into view first so Playwright can click it
+                # even when it starts outside the visible viewport.
+                await el.scroll_into_view_if_needed()
                 await el.click()
                 await page.fill(selector, action.text)
                 return f'Typed "{action.text}" in {selector}'
 
             # Element is a trigger (e.g. a button that opens a search dialog).
-            # Click it to open the dialog, then locate and fill the revealed input.
+            # Scroll into view then click to open the dialog.
+            await el.scroll_into_view_if_needed()
             await el.click()
             await asyncio.sleep(0.6)  # Allow dialog/modal animation to complete
 

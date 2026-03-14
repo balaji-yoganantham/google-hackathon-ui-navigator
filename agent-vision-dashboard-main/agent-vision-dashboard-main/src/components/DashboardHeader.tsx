@@ -1,8 +1,12 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Bot, LogOut, User } from "lucide-react";
+import { Bot, Plus, User } from "lucide-react";
+import { useAgentStore } from "@/store/agentStore";
 
 export function DashboardHeader() {
+  const { reset, isLoading, task } = useAgentStore();
+  const hasActiveTask = !!task && task.status !== 'idle';
+
   return (
     <header className="glass-header h-16 border-b border-border flex items-center justify-between px-6 shrink-0 z-50">
       <div className="flex items-center gap-3">
@@ -19,6 +23,18 @@ export function DashboardHeader() {
       </div>
 
       <div className="flex items-center gap-3">
+        {hasActiveTask && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isLoading}
+            onClick={reset}
+            className="gap-1.5 text-xs border-primary/40 text-primary hover:bg-primary/10"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New Task
+          </Button>
+        )}
         <Button variant="outline" size="sm" className="gap-2 text-xs">
           <User className="h-3.5 w-3.5" />
           Sign In

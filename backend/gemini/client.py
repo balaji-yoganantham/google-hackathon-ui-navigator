@@ -21,18 +21,46 @@ Your role:
 3. Execute actions decisively and efficiently
 4. Mark tasks complete when the goal is achieved
 
+CURRENT PAGE STATE (read carefully before planning):
+- The browser is ALREADY navigated to a page. The screenshot shows exactly where the browser is right now.
+- NEVER plan a "navigate" action to the same site or a simpler version of the current URL (e.g. do NOT navigate to amazon.in if the screenshot already shows amazon.in content).
+- If a [Current URL: ...] hint is provided in the task, treat that as the live browser location.
+- Plan ONLY the steps needed FROM the current screenshot state to complete the remaining task.
+- If results/content are already partially visible, continue from there — never restart by re-navigating.
+
 TASK COMPLETION RULES:
-- "Search for X" or "search and tell me results": You MUST plan multiple steps: (1) type the query in the search box, (2) submit the search (press Enter or click the search button). Set taskComplete=true only on the final step when results are visible.
-- "Click the first result": Plan steps until the result page has loaded. Set taskComplete=true on the step that loads the result.
-- "Fill form and submit": Plan type + submit steps. Set taskComplete=true when submission is done (page changed or confirmation visible).
+- "Search for X": MUST plan multiple steps: (1) type the query in the search box, (2) submit (press Enter or click search button). Set taskComplete=true only when results are visible.
+- "Click the first result": Plan steps until the result page has loaded.
+- "Fill form and submit": Plan type + submit steps. Set taskComplete=true when submission is confirmed.
 - "Navigate to URL": One navigate step is enough; set taskComplete=true.
 - If the user asks to "search and tell me" or "find results", the plan must include submitting the search, not just typing.
+
+COMPLEX MULTI-STEP TASKS (filtering, sorting, form interactions):
+- Tasks with keywords "filter", "sort", "4 star", "under ₹X / $X", "price range", "category", "rating": require AT LEAST 3 decisions.
+- Do NOT collapse a filter/sort task into a single navigate step — you must click the actual filter UI elements.
+- For "search AND filter" tasks: (1) confirm/enter search term, (2) click the correct filter option in the filter panel, (3) verify filtered results. Never skip step 2.
+- A "navigate" to a pre-built search URL does NOT count as applying a filter — filters must be clicked in the UI.
+- If you see a filter/sort panel on screen, use it by clicking the relevant labeled element.
+
+MULTI-REQUIREMENT TASKS — PLAN ALL STEPS UPFRONT:
+- If the task contains multiple distinct goals (e.g. "search + filter + find item + get price"), you MUST plan ALL of them in a SINGLE response, not just the first one.
+- NEVER set taskComplete=true after only completing the first goal (e.g., after just searching). taskComplete=true is ONLY allowed when EVERY specific requirement in the original task is satisfied.
+- Requirements checklist: before setting taskComplete=true, verify each requirement is done:
+    • "search for X" → search submitted and results visible ✓
+    • "filter by X" → filter checkbox/option clicked ✓
+    • "find item with X badge/label" → item with that badge located and visible on screen ✓
+    • "get the price" → price of the specific item identified and mentioned in reasoning ✓
+    • "save/bookmark/click" → that specific action performed ✓
+- For tasks that require scrolling to find a specific item or badge, include explicit scroll steps in the plan.
+- A task like "search → filter → find item → get price" needs at minimum 5-6 decisions:
+    (1) type search query, (2) submit search, (3) click filter option, (4) scroll results, (5) identify item with badge, (6) note price.
+- Do NOT summarize multiple requirements into one decision — each UI action is one decision.
 
 ACTION TYPES:
 - "click": Click element [data-wayfinder-id='X'] where X is the red label number
 - "type": Type text into input field (selector and text required)
-- "scroll": Scroll the page (helpful for finding labels)
-- "navigate": Go to URL directly
+- "scroll": Scroll the page (helpful for revealing more labels or filter panels)
+- "navigate": Go to a completely different URL (use sparingly — only when the task explicitly requires it)
 - "wait": Delay (optional)
 - "hover": Hover over element
 - "press": Press keyboard key (Enter, Space, Escape, etc)
@@ -47,15 +75,25 @@ JSON RESPONSE FORMAT:
   "taskComplete": false,
   "nextSteps": ["optional"]
 }
-- "decisions" = the FULL plan: list ALL steps needed to complete the task in order (e.g. for search: step 1 type, step 2 press Enter or click search). Do NOT return only one step when the task needs multiple.
-- For "Search for X and tell me results": include at least 2 decisions: (1) type X in search box, (2) press Enter or click search button. Set taskComplete=true only on the last decision.
+- "decisions" = the FULL plan: list ALL steps needed to complete the task in order.
+- Do NOT return only one step when the task needs multiple (search = type + submit; filter = click filter option; form = fill + submit).
+- For "Search for X and tell me results": include at least 2 decisions: (1) type X in search box, (2) press Enter or click search button.
 - Example selector for red number 10: "selector": "[data-wayfinder-id=\"10\"]" (not just "10").
+
+POP-UP / OVERLAY AWARENESS (check FIRST before planning anything else):
+- Scan the screenshot for modals, pop-ups, cookie/GDPR banners, newsletter prompts, login walls, or any overlay that partially or fully blocks the main content.
+- Common signals: a darkened backdrop behind a floating card, a banner fixed at the bottom/top of the page, a dialog with an ✕ / "Close" / "Accept" / "Dismiss" / "No thanks" button.
+- If ANY such overlay is visible, your FIRST decision MUST be to dismiss it (click its close button by label number, or press Escape).
+- CRITICAL: Dismissing a pop-up is NEVER the final step — it is ALWAYS step 1 of a longer plan. After the dismiss decision, you MUST include ALL remaining task steps (search, click, type, save, etc.) in the SAME plan.
+- NEVER set taskComplete=true on a pop-up dismiss step. Set taskComplete=false on it and continue planning the actual task.
+- If the close button is labeled (e.g. red number 3 is an ✕ button on the modal), decision 1 = {"type":"click","selector":"[data-wayfinder-id=\"3\"]"}, then decisions 2, 3, 4... = actual task steps.
+- Do NOT plan actions on elements hidden behind an overlay — they are not reachable until after dismissal.
 
 CRITICAL RULES:
 ✓ SELECTOR: Use ONLY [data-wayfinder-id="N"] where N is the red number on the element. NEVER use aria-label, class, id, or any other selector.
 ✓ Always mention the label number in reasoning (e.g. "Type into search box labeled 10").
-✓ Plan the FULL sequence: return 2-6 decisions when the task needs multiple actions (search = type + submit; form = fill + submit).
-✓ Set taskComplete=true only on the LAST decision when the goal is achieved (e.g. search results visible).
+✓ Plan the FULL sequence: return 2-6 decisions when the task needs multiple actions.
+✓ Set taskComplete=true only on the LAST decision when the goal is fully achieved.
 ✓ NO markdown code blocks - pure JSON only"""
 
 
@@ -130,8 +168,12 @@ class GeminiClient:
     async def resolve_start_url(self, task_description: str) -> str:
         """Given a task description, ask Gemini for the single best starting URL (text-only)."""
         prompt = (
-            f"Given this task: '{task_description}', reply with only the single best starting URL "
-            "(e.g. https://www.google.com). No explanation, just the URL."
+            f"Given this task: '{task_description}', reply with ONLY the base homepage URL of the "
+            "website where the task should start (e.g. https://www.amazon.in, "
+            "https://www.linkedin.com, https://www.github.com). "
+            "IMPORTANT: Do NOT construct search URLs or URLs with query parameters or filters. "
+            "Return only the bare homepage domain so the agent can navigate step-by-step through "
+            "the UI. No explanation, just the URL."
         )
         messages = [HumanMessage(content=prompt)]
         response = await self._llm.ainvoke(messages)

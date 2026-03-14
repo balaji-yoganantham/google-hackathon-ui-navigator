@@ -9,6 +9,7 @@ from langgraph.graph import END, START, StateGraph
 from browser.controller import BrowserController
 from config import settings
 from gemini.client import GeminiClient
+from utils.browser_pool import browser_pool
 from models.schemas import (
     ExecutionStep,
     GeminiResponse,
@@ -21,7 +22,8 @@ from .planner_agent import PlannerAgent
 
 logger = logging.getLogger(__name__)
 
-MAX_STEPS = 10
+MAX_STEPS = 20   # Raised to handle multi-step tasks (e.g. iterate through job listings)
+MAX_REPLANS = 3  # Maximum re-plans triggered by step failures (e.g. mid-task pop-ups)
 SCREENSHOT_OPTS = {"quality": 60, "clip_to_viewport": True}
 
 
@@ -36,6 +38,7 @@ class AgentState(TypedDict, total=False):
     decision_index: int
     status: TaskStatus
     error: str | None
+    replan_count: int   # Number of re-plans triggered by failures so far
     cancelled: bool
     _screenshot_bytes: bytes
 
@@ -74,7 +77,55 @@ async def _node_plan(state: AgentState) -> dict:
     await browser.remove_labels()
     b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
 
-    plan = await planner.run(screenshot_bytes, state["task_description"])
+    task_description = state["task_description"]
+
+    # Inject the live browser URL so the planner knows where it already is and
+    # won't plan a redundant navigate step to the same page.
+    try:
+        page = await browser_pool.get_page()
+        current_url = page.url
+        if current_url and current_url not in ("about:blank", ""):
+            task_description = f"{task_description}\n\n[Current URL: {current_url}]"
+    except Exception:
+        pass  # Non-fatal — planner still works without URL hint
+
+    replan_count = state.get("replan_count", 0)
+
+    # Detect routing here from a "completed" state — meaning either:
+    # (a) a pop-up/overlay was dismissed on the first run, or
+    # (b) the first plan only covered PART of a multi-requirement task.
+    # In both cases reset to "running" and bump replan_count to prevent infinite loops.
+    post_partial_replan = (
+        state.get("status") == "completed" and replan_count == 0
+    )
+    extra_state: dict = {}
+    if post_partial_replan:
+        extra_state = {"replan_count": 1, "status": "running"}
+        logger.info("[Orchestrator] Post-partial replan — resetting status=running, replan_count=1")
+
+    # When re-planning after a failure, inject failure context so the model
+    # knows to look for pop-ups / overlays that caused the previous step to fail.
+    if state.get("error") and replan_count > 0:
+        task_description = (
+            f"{task_description}\n\n"
+            f"[Re-planning attempt {replan_count}/{MAX_REPLANS}: "
+            f"A previous step failed — {state['error']}. "
+            f"Carefully inspect the current screenshot for any pop-ups, modals, "
+            f"cookie banners, or overlays blocking the page and dismiss them first "
+            f"before retrying the main task.]"
+        )
+        logger.info("[Orchestrator] Re-planning with failure context (attempt %s/%s)", replan_count, MAX_REPLANS)
+    elif post_partial_replan:
+        task_description = (
+            f"{task_description}\n\n"
+            f"[The previous plan only completed PART of the task (e.g. a pop-up was dismissed, "
+            f"or only the search step was done). The page is now in a new state. "
+            f"Look at the current screenshot and plan ALL REMAINING steps of the original task. "
+            f"Do NOT repeat steps that are already done. "
+            f"Include every outstanding requirement: filtering, finding specific items, checking prices, saving, etc.]"
+        )
+
+    plan = await planner.run(screenshot_bytes, task_description)
     if not plan.decisions:
         return {
             "current_screenshot": b64,
@@ -85,9 +136,11 @@ async def _node_plan(state: AgentState) -> dict:
         }
     logger.info("[Orchestrator] Plan: %s decisions", len(plan.decisions))
     return {
+        **extra_state,
         "current_screenshot": b64,
         "plan": plan.model_dump(),
         "decision_index": 0,
+        "error": None,  # Clear failure context once a new plan is ready
         "_screenshot_bytes": screenshot_bytes,
     }
 
@@ -136,23 +189,83 @@ async def _node_execute_step(state: AgentState) -> dict:
     )
     steps = list(state.get("steps") or [])
     steps.append(step)
-    next_index = idx + 1
-    new_status: TaskStatus = state.get("status") or "running"
-    if exec_result.outcome == "complete" or task_complete:
-        new_status = "completed"
-    elif not exec_result.success and settings.SINGLE_MODEL_REQUEST_MODE:
-        # In single-mode we don't replan; continue and mark failed at end if needed
-        pass
-    elif not exec_result.success:
-        new_status = "failed"
-        # Could route to plan for replan; for simplicity we stop on first failure here
-    if next_index >= len(plan.decisions):
-        if new_status == "running":
-            new_status = "completed"
+    b64_screenshot = base64.b64encode(exec_result.screenshot_bytes).decode("utf-8")
 
+    if exec_result.outcome == "complete" or task_complete:
+        # Safeguard: if the first plan only dismissed a pop-up/overlay, force a replan
+        # so the actual task still runs.
+        # Uses keyword matching on the plan summary/reasoning — avoids fragile attribute
+        # access on step objects that LangGraph may have serialised to plain dicts.
+        replan_count = state.get("replan_count", 0)
+        if replan_count == 0 and len(plan.decisions) <= 2:
+            _DISMISS_KEYWORDS = (
+                "pop", "modal", "overlay", "dismiss", "close",
+                "sign-in", "signin", "banner", "dialog", "popup",
+            )
+            summary_lower = (plan.summary or "").lower()
+            reasoning_lower = (decision.reasoning or "").lower()
+            is_dismiss_only = any(
+                kw in summary_lower or kw in reasoning_lower
+                for kw in _DISMISS_KEYWORDS
+            )
+            if is_dismiss_only:
+                logger.info(
+                    "[Orchestrator] Dismiss-only plan on first run (summary: %s) — "
+                    "triggering replan to execute main task.",
+                    plan.summary[:80],
+                )
+                return {
+                    "steps": steps,
+                    "current_screenshot": b64_screenshot,
+                    "decision_index": idx + 1,
+                    "status": "running",
+                    "error": "Pop-up/overlay dismissed — re-planning to continue the main task.",
+                    "replan_count": 1,
+                    "_screenshot_bytes": exec_result.screenshot_bytes,
+                }
+        return {
+            "steps": steps,
+            "current_screenshot": b64_screenshot,
+            "decision_index": idx + 1,
+            "status": "completed",
+            "_screenshot_bytes": exec_result.screenshot_bytes,
+        }
+
+    if not exec_result.success:
+        replan_count = state.get("replan_count", 0)
+        if replan_count < MAX_REPLANS:
+            # Trigger a re-plan: take a fresh screenshot so the planner can see
+            # any pop-up or overlay that caused this step to fail.
+            failure_msg = f"Step {idx + 1} ({decision.action.type}) failed — {exec_result.result}"
+            logger.info(
+                "[Orchestrator] %s — scheduling replan (%s/%s)",
+                failure_msg, replan_count + 1, MAX_REPLANS,
+            )
+            return {
+                "steps": steps,
+                "current_screenshot": b64_screenshot,
+                "decision_index": idx + 1,
+                "status": "running",
+                "error": failure_msg,
+                "replan_count": replan_count + 1,
+                "_screenshot_bytes": exec_result.screenshot_bytes,
+            }
+        # Replan budget exhausted — mark as failed
+        logger.info("[Orchestrator] Step failed and replan budget exhausted (%s/%s)", replan_count, MAX_REPLANS)
+        return {
+            "steps": steps,
+            "current_screenshot": b64_screenshot,
+            "decision_index": idx + 1,
+            "status": "failed",
+            "_screenshot_bytes": exec_result.screenshot_bytes,
+        }
+
+    # Step succeeded — continue to next step or complete
+    next_index = idx + 1
+    new_status: TaskStatus = "completed" if next_index >= len(plan.decisions) else "running"
     return {
         "steps": steps,
-        "current_screenshot": base64.b64encode(exec_result.screenshot_bytes).decode("utf-8"),
+        "current_screenshot": b64_screenshot,
         "decision_index": next_index,
         "status": new_status,
         "_screenshot_bytes": exec_result.screenshot_bytes,
@@ -168,17 +281,76 @@ def _route_after_plan(state: AgentState) -> Literal["execute_step", "end"]:
     return "end"
 
 
+_DISMISS_KEYWORDS = (
+    "pop", "modal", "overlay", "dismiss", "close",
+    "sign-in", "signin", "banner", "dialog", "popup",
+)
+
+# Task keywords that signal a multi-requirement task.  If ANY of these appear
+# in the task description but NOT in what the plan actually covered, the task
+# has unmet requirements and needs a replan.
+_TASK_REQUIREMENT_KEYWORDS = (
+    "filter", "4 star", "rating", "badge", "deal", "limited time",
+    "price", "save", "bookmark", "find the", "sort by",
+)
+
+
 def _route_after_execute(state: AgentState) -> Literal["execute_step", "plan", "end"]:
     if state.get("cancelled"):
         return "end"
-    if state.get("status") in ("completed", "failed", "cancelled"):
+
+    status = state.get("status")
+
+    # Error-based replan (step failure or explicit replan trigger).
+    if state.get("error") and status == "running":
+        return "plan"
+
+    if status in ("failed", "cancelled"):
         return "end"
+
+    if status == "completed":
+        replan_count = state.get("replan_count", 0)
+        steps = state.get("steps") or []
+
+        if replan_count == 0:
+            plan = _get_plan(state)
+            if plan:
+                plan_text = (
+                    f"{plan.summary or ''} "
+                    + " ".join(d.reasoning for d in (plan.decisions or []))
+                ).lower()
+
+                # Safeguard A: dismiss-only first plan (pop-up/modal dismissed, actual
+                # task not yet started).
+                if len(steps) <= 2 and any(kw in plan_text for kw in _DISMISS_KEYWORDS):
+                    logger.info(
+                        "[Orchestrator] Dismiss-only completion (steps=%s, summary=%s) — routing to replan.",
+                        len(steps),
+                        (plan.summary or "")[:80],
+                    )
+                    return "plan"
+
+                # Safeguard B: multi-requirement task where the plan only covered
+                # the FIRST requirement (e.g. just searched, but task also needs
+                # filtering, finding a specific item, getting a price, saving, etc.).
+                task_desc_lower = (state.get("task_description") or "").lower()
+                unmet = [
+                    kw for kw in _TASK_REQUIREMENT_KEYWORDS
+                    if kw in task_desc_lower and kw not in plan_text
+                ]
+                if unmet:
+                    logger.info(
+                        "[Orchestrator] Task has unmet requirements %s — routing to replan.",
+                        unmet,
+                    )
+                    return "plan"
+
+        return "end"
+
     plan = _get_plan(state)
     idx = state.get("decision_index", 0)
     if not plan or not plan.decisions or idx >= len(plan.decisions):
         return "end"
-    if not settings.SINGLE_MODEL_REQUEST_MODE and state.get("error"):
-        return "plan"
     return "execute_step"
 
 
@@ -225,6 +397,7 @@ async def run_task(
         "decision_index": 0,
         "status": "running",
         "error": None,
+        "replan_count": 0,
         "cancelled": False,
     }
 
@@ -264,10 +437,13 @@ async def run_task(
             _emit()
             logger.info("[Orchestrator] Task %s cancelled", task_id)
             return task
-        if task.status in ("completed", "failed", "cancelled"):
-            logger.info("[Orchestrator] Task %s finished: status=%s steps=%s", task_id, task.status, len(task.steps))
+        # Only hard-stop for terminal error/cancel states.
+        # "completed" is intentionally excluded — the graph may still route to a
+        # replan node (e.g. after a dismiss-only first plan) before truly finishing.
+        if task.status in ("failed", "cancelled"):
+            logger.info("[Orchestrator] Task %s stopped: status=%s steps=%s", task_id, task.status, len(task.steps))
             return task
 
     task.updatedAt = datetime.utcnow()
-    logger.info("[Orchestrator] Task %s ended: status=%s steps=%s", task_id, task.status, len(task.steps))
+    logger.info("[Orchestrator] Task %s finished: status=%s steps=%s", task_id, task.status, len(task.steps))
     return task
