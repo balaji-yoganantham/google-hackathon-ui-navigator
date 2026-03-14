@@ -44,6 +44,7 @@ class AgentState(TypedDict, total=False):
     cancelled: bool
     verification_result: dict | None  # VerifierResponse as dict
     last_plan_decisions: list[str]  # Normalized action/reasoning strings for duplicate guard
+    last_remaining_requirements: list[str]  # Previous verifier remaining (for stale-loop detection)
     _screenshot_bytes: bytes
 
 
@@ -393,6 +394,32 @@ def _plans_are_identical(plan_a: list[str], plan_b: list[str], threshold: float 
     return overlap >= threshold
 
 
+def _requirement_matches(a: str, b: str, min_common_prefix: int = 18) -> bool:
+    """True if two requirements are effectively the same (exact, one contains the other, or long common prefix)."""
+    if not a or not b:
+        return False
+    na, nb = a.lower().strip(), b.lower().strip()
+    if na == nb or na in nb or nb in na:
+        return True
+    common = sum(1 for i, (ca, cb) in enumerate(zip(na, nb)) if ca == cb)
+    return common >= min_common_prefix
+
+
+def _requirements_are_stale(last: list[str], current: list[str], threshold: float = 0.7) -> bool:
+    """True if current remaining requirements are effectively the same as last (verifier not making progress)."""
+    if not last or not current:
+        return False
+    norm_last = [r.lower().strip() for r in last if r]
+    norm_cur = [r.lower().strip() for r in current if r]
+    if not norm_last or not norm_cur:
+        return False
+    matches = sum(
+        1 for c in norm_cur
+        if any(_requirement_matches(c, l) for l in norm_last)
+    )
+    return matches / max(len(norm_cur), 1) >= threshold
+
+
 def _get_plan(state: AgentState) -> GeminiResponse | None:
     raw = state.get("plan")
     if not raw:
@@ -438,6 +465,9 @@ async def _node_verify(state: AgentState) -> dict:
     result_dict = result.model_dump()
     status: TaskStatus = "completed" if result.task_complete else "running"
     replan_count = state.get("replan_count", 0)
+    current_remaining = getattr(result, "remaining_requirements", None) or result_dict.get("remaining_requirements", [])
+    last_remaining = state.get("last_remaining_requirements") or []
+
     out: dict = {
         "current_screenshot": b64,
         "verification_result": result_dict,
@@ -445,6 +475,18 @@ async def _node_verify(state: AgentState) -> dict:
         "_screenshot_bytes": screenshot_bytes,
     }
     if not result.task_complete:
+        out["last_remaining_requirements"] = current_remaining
+        # Stale loop breaker: verifier keeps reporting same requirement after replans
+        if replan_count >= 2 and last_remaining and _requirements_are_stale(last_remaining, current_remaining):
+            logger.warning(
+                "[Orchestrator] Verifier repeatedly reports same requirement (no progress) — failing to avoid loop"
+            )
+            out["status"] = "failed"
+            out["error"] = (
+                "Verifier keeps reporting the same remaining requirement; "
+                "task may be ambiguous or require a different action (e.g. click the channel link in results)."
+            )
+            return out
         next_replan_count = replan_count + 1
         if next_replan_count >= MAX_REPLANS:
             out["status"] = "failed"

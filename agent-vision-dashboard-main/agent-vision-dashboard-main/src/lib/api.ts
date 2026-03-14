@@ -61,6 +61,16 @@ function mapResult(result: string): 'success' | 'fail' | 'pending' {
   return result.toLowerCase().startsWith('failed') ? 'fail' : 'success';
 }
 
+/** Action payload for Comet-style collapsible JSON block. */
+export interface ActionPayload {
+  type: string;
+  selector?: string;
+  text?: string;
+  key?: string;
+  url?: string;
+  amount?: number;
+}
+
 /** Convert a full BackendTask into the shape the frontend store expects. */
 export function mapBackendTask(raw: BackendTask) {
   return {
@@ -70,14 +80,26 @@ export function mapBackendTask(raw: BackendTask) {
     startUrl: raw.startUrl,
     error: raw.error,
     currentScreenshot: raw.currentScreenshot ? toDataUrl(raw.currentScreenshot) : undefined,
-    steps: (raw.steps || []).map((s) => ({
-      stepNumber: s.stepNumber,
-      actionType: (s.action?.type ?? 'click') as BackendAction['type'],
-      reasoning: s.reasoning || s.description || '',
-      result: mapResult(s.result),
-      screenshotUrl: s.screenshot ? toDataUrl(s.screenshot) : undefined,
-      timestamp: s.timestamp || new Date().toISOString(),
-    })),
+    steps: (raw.steps || []).map((s) => {
+      const action = s.action;
+      const actionPayload: ActionPayload = {
+        type: (action?.type ?? 'click') as string,
+        ...(action?.selector != null && { selector: action.selector }),
+        ...(action?.text != null && { text: action.text }),
+        ...(action?.key != null && { key: action.key }),
+        ...(action?.url != null && { url: action.url }),
+        ...(action?.amount != null && { amount: action.amount }),
+      };
+      return {
+        stepNumber: s.stepNumber,
+        actionType: (action?.type ?? 'click') as BackendAction['type'],
+        reasoning: s.reasoning || s.description || '',
+        result: mapResult(s.result),
+        screenshotUrl: s.screenshot ? toDataUrl(s.screenshot) : undefined,
+        timestamp: s.timestamp || new Date().toISOString(),
+        actionPayload,
+      };
+    }),
     currentNode: raw.currentNode ?? undefined,
     planSummary: raw.planSummary ?? undefined,
     planDecisions: raw.planDecisions ?? [],

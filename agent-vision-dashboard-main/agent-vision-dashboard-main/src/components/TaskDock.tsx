@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useAgentStore } from "@/store/agentStore";
-import { executeTask, continueTask, cancelTask, createSSEStream, pollStatus, type BackendTask } from "@/lib/api";
+import { executeTask, continueTask, cancelTask, createSSEStream, pollStatus, mapBackendTask, type BackendTask } from "@/lib/api";
 import { useCallback, useRef } from "react";
 
 export function TaskDock() {
@@ -92,15 +92,19 @@ export function TaskDock() {
       if (continuingSessionId) {
         // ── Continue from a previous session ──────────────────────────────
         const { sessionId, task: taskData } = await continueTask(continuingSessionId, taskDescription);
+        const mapped = mapBackendTask(taskData);
         setTask({
           sessionId,
-          taskDescription: taskData.taskDescription || taskDescription,
-          startUrl: taskData.startUrl,
-          status: 'running',
-          steps: taskData.steps?.length
-            ? (taskData.steps as any)
-            : [],
+          taskDescription: mapped.taskDescription || taskDescription,
+          startUrl: mapped.startUrl,
+          status: mapped.status as 'running',
+          steps: mapped.steps as import('@/store/agentStore').ExecutionStep[],
           startedAt: new Date().toISOString(),
+          currentNode: mapped.currentNode,
+          planSummary: mapped.planSummary,
+          planDecisions: mapped.planDecisions,
+          currentDecisionIndex: mapped.currentDecisionIndex,
+          currentScreenshot: mapped.currentScreenshot,
         });
         attachStream(sessionId);
       } else {
@@ -113,13 +117,19 @@ export function TaskDock() {
           startedAt: new Date().toISOString(),
         });
         const { sessionId, task: taskData } = await executeTask(taskDescription);
+        const mapped = mapBackendTask(taskData);
         setTask({
           sessionId,
-          taskDescription: taskData.taskDescription || taskDescription,
-          startUrl: taskData.startUrl,
-          status: 'running',
-          steps: [],
+          taskDescription: mapped.taskDescription || taskDescription,
+          startUrl: mapped.startUrl,
+          status: (mapped.status === 'pending' || mapped.status === 'running' ? mapped.status : 'running') as 'running',
+          steps: mapped.steps as import('@/store/agentStore').ExecutionStep[],
           startedAt: new Date().toISOString(),
+          currentNode: mapped.currentNode,
+          planSummary: mapped.planSummary,
+          planDecisions: mapped.planDecisions,
+          currentDecisionIndex: mapped.currentDecisionIndex,
+          currentScreenshot: mapped.currentScreenshot,
         });
         attachStream(sessionId);
       }

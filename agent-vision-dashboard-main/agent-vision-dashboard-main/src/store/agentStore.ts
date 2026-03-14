@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { mapBackendTask, type BackendTask } from '@/lib/api';
+import { mapBackendTask, type BackendTask, type ActionPayload } from '@/lib/api';
 
 // Matches all action types the backend can produce
 export type ActionType =
@@ -13,6 +13,8 @@ export interface ExecutionStep {
   result: 'success' | 'fail' | 'pending';
   screenshotUrl?: string;
   timestamp: string;
+  /** Comet-style: raw action for collapsible JSON block. */
+  actionPayload?: ActionPayload;
 }
 
 export interface PlanDecision {
