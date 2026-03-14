@@ -151,9 +151,60 @@ class BrowserController:
             el = await page.query_selector(selector)
             if not el:
                 raise ValueError(f"Element not found: {selector}")
+
+            # Determine whether the element is directly fillable (input/textarea/select/contenteditable).
+            # Buttons and other triggers must be clicked first to reveal an actual input.
+            tag = await el.evaluate("e => e.tagName.toLowerCase()")
+            is_contenteditable = await el.evaluate("e => !!e.isContentEditable")
+            role = await el.evaluate("e => (e.getAttribute('role') || '').toLowerCase()")
+            directly_fillable = (
+                tag in ("input", "textarea", "select")
+                or is_contenteditable
+                or role in ("textbox", "searchbox", "combobox")
+            )
+
+            if directly_fillable:
+                await el.click()
+                await page.fill(selector, action.text)
+                return f'Typed "{action.text}" in {selector}'
+
+            # Element is a trigger (e.g. a button that opens a search dialog).
+            # Click it to open the dialog, then locate and fill the revealed input.
             await el.click()
-            await page.fill(selector, action.text)
-            return f'Typed "{action.text}" in {selector}'
+            await asyncio.sleep(0.6)  # Allow dialog/modal animation to complete
+
+            # Check whether focus moved to an input or textarea automatically.
+            try:
+                focused_is_input = await page.evaluate(
+                    "() => ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName || '')"
+                )
+                if focused_is_input:
+                    await page.keyboard.type(action.text, delay=20)
+                    return f'Typed "{action.text}" via focused dialog input after clicking {selector}'
+            except Exception:
+                pass
+
+            # Scan common dialog/popover selectors for a visible text input.
+            dialog_input_selectors = [
+                "dialog input:not([type='hidden'])",
+                "[role='dialog'] input:not([type='hidden'])",
+                "[role='combobox']",
+                "[role='searchbox']",
+                "input[type='search']",
+                "input[type='text']",
+            ]
+            for input_sel in dialog_input_selectors:
+                try:
+                    found = await page.wait_for_selector(input_sel, state="visible", timeout=1_500)
+                    if found:
+                        await found.fill(action.text)
+                        return f'Typed "{action.text}" in dialog input ({input_sel}) after clicking {selector}'
+                except Exception:
+                    continue
+
+            # Final fallback: type via keyboard (handles non-standard focusable inputs).
+            await page.keyboard.type(action.text, delay=20)
+            return f'Typed "{action.text}" via keyboard after clicking {selector}'
 
         if t == "scroll":
             amount = action.amount or 500

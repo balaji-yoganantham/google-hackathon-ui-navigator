@@ -3,6 +3,7 @@ import base64
 import json
 import logging
 import re
+import warnings
 from typing import Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -71,14 +72,16 @@ class GeminiClient:
         self._model = model or settings.GEMINI_MODEL
 
         if settings.USE_VERTEX_AI:
-            from langchain_google_vertexai import ChatVertexAI
-            self._llm = ChatVertexAI(
-                model=self._model,
-                project=settings.GOOGLE_CLOUD_PROJECT,
-                location=settings.GOOGLE_CLOUD_LOCATION,
-                temperature=0.2,
-                max_output_tokens=2048,
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=DeprecationWarning, module="langchain")
+                from langchain_google_vertexai import ChatVertexAI
+                self._llm = ChatVertexAI(
+                    model=self._model,
+                    project=settings.GOOGLE_CLOUD_PROJECT,
+                    location=settings.GOOGLE_CLOUD_LOCATION,
+                    temperature=0.2,
+                    max_output_tokens=2048,
+                )
             logger.info("GeminiClient initialized (Vertex AI) model=%s project=%s", self._model, settings.GOOGLE_CLOUD_PROJECT)
         else:
             from langchain_google_genai import ChatGoogleGenerativeAI
