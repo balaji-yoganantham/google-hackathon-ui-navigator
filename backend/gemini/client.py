@@ -10,7 +10,7 @@ from typing import Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from config import settings
-from models.schemas import GeminiResponse
+from models.schemas import GeminiResponse, VerifierResponse
 
 logger = logging.getLogger(__name__)
 
@@ -100,9 +100,17 @@ REQUIREMENT CHECKLIST RULES (when the task or prompt lists specific remaining re
 CRITICAL RULES:
 ✓ SELECTOR: Use ONLY [data-wayfinder-id="N"] where N is the red number on the element. NEVER use aria-label, class, id, or any other selector.
 ✓ Always mention the label number in reasoning (e.g. "Type into search box labeled 10").
-✓ Plan the FULL sequence: return 2-6 decisions when the task needs multiple actions.
+✓ Plan at most 2-4 decisions per response. A separate verifier will check completion; do not over-plan.
 ✓ Set taskComplete=true only on the LAST decision when the goal is fully achieved.
 ✓ NO markdown code blocks - pure JSON only"""
+
+VERIFIER_PROMPT = """You are a task completion verifier for a web automation agent.
+Given a screenshot of the current browser state, the original task, and a list of completed actions:
+- Determine if EVERY requirement in the original task has been satisfied.
+- Return JSON only: { "task_complete": true or false, "reasoning": "brief explanation", "remaining_requirements": ["list", "of", "unmet", "requirements"] }
+- Be strict: set task_complete=true ONLY when ALL requirements are visibly satisfied in the screenshot or clearly achieved by the actions taken.
+- Do NOT suggest next actions. Only verify completion.
+- NO markdown code blocks - pure JSON only."""
 
 
 class GeminiClient:
@@ -229,6 +237,60 @@ class GeminiClient:
             logger.info("[resolve_start_url] Invalid or empty URL from model, using https://www.google.com")
             return "https://www.google.com"
         return url
+
+    async def verify_progress(
+        self,
+        screenshot_bytes: bytes,
+        task_description: str,
+        executed_steps_summary: str,
+    ) -> VerifierResponse:
+        """Async: screenshot + task + steps summary → VerifierResponse (task_complete, reasoning, remaining_requirements)."""
+        base64_str = base64.b64encode(screenshot_bytes).decode("utf-8")
+        user_content: list[dict] = [
+            {"type": "image", "base64": base64_str, "mime_type": "image/jpeg"},
+            {
+                "type": "text",
+                "text": f"Original task: {task_description}\n\nCompleted actions:\n{executed_steps_summary}\n\nIs the task complete? Return JSON: task_complete, reasoning, remaining_requirements.",
+            },
+        ]
+        messages = [
+            SystemMessage(content=VERIFIER_PROMPT),
+            HumanMessage(content=user_content),
+        ]
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 4):
+            try:
+                response = await self._llm.ainvoke(messages)
+                text = getattr(response, "content", None) or ""
+                if isinstance(text, list):
+                    text = "".join(
+                        block.get("text", "") if isinstance(block, dict) else str(block)
+                        for block in text
+                    )
+                text = (text or "").strip()
+                if not text:
+                    raise ValueError("Model returned an empty response.")
+                parsed = self._parse_json_response(text)
+                return VerifierResponse.model_validate(parsed)
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                is_retryable = (
+                    "empty" in err_str or "json" in err_str or "invalid" in err_str
+                    or "expecting" in err_str or "parse" in err_str
+                )
+                if is_retryable and attempt < 3:
+                    delay = 1.5 * attempt
+                    logger.warning(
+                        "Verify attempt %s/3 failed (%s), retrying in %.1fs...",
+                        attempt, str(e)[:60], delay,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    raise
+        raise ValueError(
+            "Verifier returned an empty or invalid response after retries."
+        ) from last_error
 
     @staticmethod
     def _parse_json_response(raw: str) -> dict:

@@ -19,6 +19,7 @@ from models.schemas import (
 
 from .executor_agent import ExecutorAgent, ExecutorResult
 from .planner_agent import PlannerAgent
+from .verifier_agent import VerifierAgent
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,7 @@ class AgentState(TypedDict, total=False):
     error: str | None
     replan_count: int   # Number of re-plans triggered by failures so far
     cancelled: bool
+    verification_result: dict | None  # VerifierResponse as dict
     _screenshot_bytes: bytes
 
 
@@ -53,6 +55,10 @@ def _get_planner() -> PlannerAgent:
 
 def _get_executor() -> ExecutorAgent:
     return ExecutorAgent(browser_controller=_get_browser())
+
+
+def _get_verifier() -> VerifierAgent:
+    return VerifierAgent()
 
 
 async def _node_navigate(state: AgentState) -> dict:
@@ -90,6 +96,8 @@ async def _node_plan(state: AgentState) -> dict:
         pass  # Non-fatal — planner still works without URL hint
 
     replan_count = state.get("replan_count", 0)
+    remaining: list[str] = []
+    min_required = 0
 
     # Routing here from a "completed" state means we're replanning after the agent
     # reported done but the safeguard found the task incomplete (dismiss-only or
@@ -104,9 +112,37 @@ async def _node_plan(state: AgentState) -> dict:
             MAX_REPLANS,
         )
 
+    # Highest-priority steering: use verifier feedback to force concrete progress.
+    verification = state.get("verification_result") or {}
+    verifier_remaining_raw = verification.get("remaining_requirements", [])
+    verifier_remaining = [
+        str(r).strip()
+        for r in verifier_remaining_raw
+        if isinstance(r, str) and str(r).strip()
+    ]
+    if verifier_remaining:
+        prioritized = verifier_remaining[:4]
+        min_required = max(2, min(len(prioritized), 4))
+        remaining_str = "; ".join(prioritized)
+        task_short = (task_description or "")[:420].strip()
+        if len(task_description or "") > 420:
+            task_short += "..."
+        task_description = (
+            f"{task_short}\n\n"
+            f"[REMAINING REQUIREMENTS: {remaining_str}. "
+            f"Return {min_required}-4 concrete decisions that directly progress these requirements. "
+            f"Use click/type/press actions when possible; do not return dismiss-only or scroll-only plans "
+            f"unless an overlay is visibly blocking the page. Return valid JSON only.]"
+        )
+        remaining = prioritized
+        logger.info(
+            "[Orchestrator] Re-planning with verifier requirements (%s): %s",
+            min_required,
+            remaining_str[:120],
+        )
     # When re-planning after a failure, inject failure context so the model
     # knows to look for pop-ups / overlays that caused the previous step to fail.
-    if state.get("error") and replan_count > 0:
+    elif state.get("error") and replan_count > 0:
         task_description = (
             f"{task_description}\n\n"
             f"[Re-planning attempt {replan_count}/{MAX_REPLANS}: "
@@ -121,7 +157,6 @@ async def _node_plan(state: AgentState) -> dict:
         # model cannot ignore them. Force minimum steps = len(remaining).
         prev_plan = _get_plan(state)
         task_desc_lower = (state.get("task_description") or "").lower()
-        remaining: list[str] = []
         if prev_plan:
             plan_text = (
                 f"{prev_plan.summary or ''} "
@@ -141,6 +176,7 @@ async def _node_plan(state: AgentState) -> dict:
                 if kw in task_desc_lower and kw not in covered_text
             ]
         if remaining:
+            min_required = max(1, min(len(remaining), 4))
             remaining_str = ", ".join(remaining)
             # Keep prompt short to avoid model empty/malformed responses (token limit, overflow)
             task_short = (task_description or "")[:380].strip()
@@ -148,7 +184,7 @@ async def _node_plan(state: AgentState) -> dict:
                 task_short += "..."
             task_description = (
                 f"{task_short}\n\n"
-                f"[Remaining: {remaining_str}. Plan at least {len(remaining)} steps — one per requirement. "
+                f"[Remaining: {remaining_str}. Plan at least {min_required} step(s) — one per requirement. "
                 f"Look at the screenshot and return valid JSON with 'decisions' array.]"
             )
         else:
@@ -194,8 +230,7 @@ async def _node_plan(state: AgentState) -> dict:
         }
     # If we asked for at least N steps (remaining requirements) but got fewer, retry once
     # with a stricter prompt so we don't waste an execute cycle on an invalid 1-step plan.
-    if replan_after_completion and remaining and len(plan.decisions) < len(remaining):
-        min_required = len(remaining)
+    if remaining and min_required > 0 and len(plan.decisions) < min_required:
         stricter = (
             f"{task_description}\n\n"
             f"[INVALID: You returned {len(plan.decisions)} decision(s) but there are {min_required} remaining requirements. "
@@ -232,6 +267,57 @@ def _get_plan(state: AgentState) -> GeminiResponse | None:
     if isinstance(raw, GeminiResponse):
         return raw
     return GeminiResponse.model_validate(raw)
+
+
+async def _node_verify(state: AgentState) -> dict:
+    """Take screenshot, call verifier; return verification_result and status (completed or running)."""
+    browser = _get_browser()
+    verifier = _get_verifier()
+    screenshot_bytes = await browser.screenshot(**SCREENSHOT_OPTS)
+    b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
+
+    steps = state.get("steps") or []
+    steps_summary = "\n".join(
+        f"{i + 1}. {s.get('reasoning', '') or s.get('description', '')} -> {s.get('result', '')}"
+        if isinstance(s, dict)
+        else f"{i + 1}. {getattr(s, 'reasoning', '') or getattr(s, 'description', '')} -> {getattr(s, 'result', '')}"
+        for i, s in enumerate(steps)
+    )
+    task_description = state.get("task_description") or ""
+
+    try:
+        result = await verifier.run(screenshot_bytes, task_description, steps_summary or "No steps yet.")
+    except Exception as e:
+        logger.warning("[Orchestrator] Verifier failed: %s — treating as incomplete, will replan", str(e)[:80])
+        result_dict = {"task_complete": False, "reasoning": str(e)[:200], "remaining_requirements": ["verification failed"]}
+        replan_count = state.get("replan_count", 0)
+        next_replan_count = replan_count + 1
+        budget_exhausted = next_replan_count >= MAX_REPLANS
+        return {
+            "current_screenshot": b64,
+            "verification_result": result_dict,
+            "status": "failed" if budget_exhausted else "running",
+            "error": "Verifier failed and replan budget exhausted." if budget_exhausted else None,
+            "replan_count": next_replan_count,
+            "_screenshot_bytes": screenshot_bytes,
+        }
+
+    result_dict = result.model_dump()
+    status: TaskStatus = "completed" if result.task_complete else "running"
+    replan_count = state.get("replan_count", 0)
+    out: dict = {
+        "current_screenshot": b64,
+        "verification_result": result_dict,
+        "status": status,
+        "_screenshot_bytes": screenshot_bytes,
+    }
+    if not result.task_complete:
+        next_replan_count = replan_count + 1
+        if next_replan_count >= MAX_REPLANS:
+            out["status"] = "failed"
+            out["error"] = "Task incomplete after maximum replan attempts."
+        out["replan_count"] = next_replan_count
+    return out
 
 
 async def _node_execute_step(state: AgentState) -> dict:
@@ -377,7 +463,24 @@ _TASK_REQUIREMENT_KEYWORDS = (
 )
 
 
-def _route_after_execute(state: AgentState) -> Literal["execute_step", "plan", "end"]:
+def _route_after_verify(state: AgentState) -> Literal["plan", "end"]:
+    """After verify: end if task complete or replan budget exhausted; else replan."""
+    if state.get("cancelled"):
+        return "end"
+    replan_count = state.get("replan_count", 0)
+    verification = state.get("verification_result") or {}
+    task_complete = verification.get("task_complete", False)
+    if task_complete:
+        logger.info("[Orchestrator] Verifier: task complete — end")
+        return "end"
+    if replan_count >= MAX_REPLANS:
+        logger.info("[Orchestrator] Verifier: replan budget exhausted (%s) — end", replan_count)
+        return "end"
+    logger.info("[Orchestrator] Verifier: incomplete (replan %s/%s) — routing to plan", replan_count, MAX_REPLANS)
+    return "plan"
+
+
+def _route_after_execute(state: AgentState) -> Literal["execute_step", "plan", "verify", "end"]:
     if state.get("cancelled"):
         return "end"
 
@@ -395,14 +498,12 @@ def _route_after_execute(state: AgentState) -> Literal["execute_step", "plan", "
         steps = state.get("steps") or []
         plan = _get_plan(state)
 
+        # Safeguard A: dismiss-only (pop-up/modal dismissed, actual task not started).
         if plan and replan_count < MAX_REPLANS:
             plan_text = (
                 f"{plan.summary or ''} "
                 + " ".join(d.reasoning for d in (plan.decisions or []))
             ).lower()
-
-            # Safeguard A: dismiss-only (pop-up/modal dismissed, actual task not started).
-            # Only on first completion to avoid false positives.
             if replan_count == 0 and len(steps) <= 2 and any(
                 kw in plan_text for kw in _DISMISS_KEYWORDS
             ):
@@ -413,33 +514,8 @@ def _route_after_execute(state: AgentState) -> Literal["execute_step", "plan", "
                 )
                 return "plan"
 
-            # Safeguard B: task has unmet requirements. Run on every completion
-            # until replan budget is exhausted so we keep replanning until the
-            # full task is done (e.g. filter + find deal + price).
-            # Include ALL executed steps' text so that keywords covered in prior
-            # plan rounds are not re-flagged as unmet on subsequent completions.
-            task_desc_lower = (state.get("task_description") or "").lower()
-            steps_text = " ".join(
-                (s.get("description", "") + " " + s.get("reasoning", "") + " " + s.get("result", ""))
-                if isinstance(s, dict)
-                else (getattr(s, "description", "") + " " + getattr(s, "reasoning", "") + " " + getattr(s, "result", ""))
-                for s in steps
-            ).lower()
-            covered_text = plan_text + " " + steps_text
-            unmet = [
-                kw for kw in _TASK_REQUIREMENT_KEYWORDS
-                if kw in task_desc_lower and kw not in covered_text
-            ]
-            if unmet:
-                logger.info(
-                    "[Orchestrator] Task has unmet requirements %s (replan %s/%s) — routing to replan.",
-                    unmet,
-                    replan_count + 1,
-                    MAX_REPLANS,
-                )
-                return "plan"
-
-        return "end"
+        # Plan exhausted: let verifier decide if task is done or we need to replan.
+        return "verify"
 
     plan = _get_plan(state)
     idx = state.get("decision_index", 0)
@@ -455,6 +531,7 @@ def build_agent_graph():
     builder.add_node("navigate", _node_navigate)
     builder.add_node("plan", _node_plan)
     builder.add_node("execute_step", _node_execute_step)
+    builder.add_node("verify", _node_verify)
 
     builder.add_edge(START, "navigate")
     builder.add_edge("navigate", "plan")
@@ -462,8 +539,9 @@ def build_agent_graph():
     builder.add_conditional_edges(
         "execute_step",
         _route_after_execute,
-        {"execute_step": "execute_step", "plan": "plan", "end": END},
+        {"execute_step": "execute_step", "plan": "plan", "verify": "verify", "end": END},
     )
+    builder.add_conditional_edges("verify", _route_after_verify, {"plan": "plan", "end": END})
 
     return builder.compile()
 
@@ -537,6 +615,8 @@ async def run_task(
                     ]
             if "decision_index" in node_state:
                 task.currentDecisionIndex = node_state["decision_index"]
+            if "verification_result" in node_state:
+                task.verification_result = node_state["verification_result"]
         _emit()
         if get_cancelled and get_cancelled():
             task.status = "cancelled"

@@ -42,11 +42,13 @@ function ActivityFeed({ task }: { task: AgentTask }) {
       ? 'Navigating'
       : node === 'plan'
         ? 'Planning (taking screenshot…)'
-        : node === 'execute_step' && total > 0
-          ? `Executing step ${currentIdx + 1} of ${total}`
-          : node === 'execute_step'
-            ? 'Executing'
-            : 'Running';
+        : node === 'verify'
+          ? 'Verifying progress…'
+          : node === 'execute_step' && total > 0
+            ? `Executing step ${currentIdx + 1} of ${total}`
+            : node === 'execute_step'
+              ? 'Executing'
+              : 'Running';
 
   const showPlan = planDecisions.length > 0 || (task.planSummary ?? '').length > 0;
 

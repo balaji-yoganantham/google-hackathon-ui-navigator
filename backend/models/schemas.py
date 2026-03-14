@@ -59,10 +59,11 @@ class TaskExecution(BaseModel):
     createdAt: datetime = Field(default_factory=datetime.utcnow)
     updatedAt: datetime = Field(default_factory=datetime.utcnow)
     # Live activity feed: current phase and plan visibility
-    currentNode: Optional[str] = None  # "navigate" | "plan" | "execute_step"
+    currentNode: Optional[str] = None  # "navigate" | "plan" | "execute_step" | "verify"
     planSummary: Optional[str] = None
     planDecisions: list[dict] = Field(default_factory=list)  # [{actionType, reasoning}, ...]
     currentDecisionIndex: int = 0
+    verification_result: Optional[dict] = None  # VerifierResponse as dict for SSE
 
 
 class GeminiResponse(BaseModel):
@@ -70,6 +71,12 @@ class GeminiResponse(BaseModel):
     summary: str
     taskComplete: bool
     nextSteps: Optional[list[str]] = None
+
+
+class VerifierResponse(BaseModel):
+    task_complete: bool
+    reasoning: str
+    remaining_requirements: list[str] = Field(default_factory=list)
 
 
 class WebsiteAnalysis(BaseModel):
