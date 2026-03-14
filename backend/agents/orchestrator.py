@@ -91,17 +91,18 @@ async def _node_plan(state: AgentState) -> dict:
 
     replan_count = state.get("replan_count", 0)
 
-    # Detect routing here from a "completed" state — meaning either:
-    # (a) a pop-up/overlay was dismissed on the first run, or
-    # (b) the first plan only covered PART of a multi-requirement task.
-    # In both cases reset to "running" and bump replan_count to prevent infinite loops.
-    post_partial_replan = (
-        state.get("status") == "completed" and replan_count == 0
-    )
+    # Routing here from a "completed" state means we're replanning after the agent
+    # reported done but the safeguard found the task incomplete (dismiss-only or
+    # unmet requirements). Bump replan_count and reset status so we don't loop forever.
+    replan_after_completion = state.get("status") == "completed"
     extra_state: dict = {}
-    if post_partial_replan:
-        extra_state = {"replan_count": 1, "status": "running"}
-        logger.info("[Orchestrator] Post-partial replan — resetting status=running, replan_count=1")
+    if replan_after_completion:
+        extra_state = {"replan_count": replan_count + 1, "status": "running"}
+        logger.info(
+            "[Orchestrator] Replan after completion — status=running, replan_count=%s/%s",
+            replan_count + 1,
+            MAX_REPLANS,
+        )
 
     # When re-planning after a failure, inject failure context so the model
     # knows to look for pop-ups / overlays that caused the previous step to fail.
@@ -115,17 +116,27 @@ async def _node_plan(state: AgentState) -> dict:
             f"before retrying the main task.]"
         )
         logger.info("[Orchestrator] Re-planning with failure context (attempt %s/%s)", replan_count, MAX_REPLANS)
-    elif post_partial_replan:
+    elif replan_after_completion:
         task_description = (
             f"{task_description}\n\n"
-            f"[The previous plan only completed PART of the task (e.g. a pop-up was dismissed, "
-            f"or only the search step was done). The page is now in a new state. "
+            f"[The previous plan only completed PART of the task. The page is now in a new state. "
             f"Look at the current screenshot and plan ALL REMAINING steps of the original task. "
             f"Do NOT repeat steps that are already done. "
             f"Include every outstanding requirement: filtering, finding specific items, checking prices, saving, etc.]"
         )
 
-    plan = await planner.run(screenshot_bytes, task_description)
+    try:
+        plan = await planner.run(screenshot_bytes, task_description)
+    except ValueError as e:
+        logger.warning("[Orchestrator] Planner failed (e.g. empty model response): %s", str(e)[:120])
+        return {
+            **extra_state,
+            "current_screenshot": b64,
+            "plan": None,
+            "decision_index": 0,
+            "status": "failed",
+            "error": str(e)[:200] or "AI could not create a plan for this task",
+        }
     if not plan.decisions:
         return {
             "current_screenshot": b64,
@@ -283,7 +294,8 @@ def _route_after_plan(state: AgentState) -> Literal["execute_step", "end"]:
 
 _DISMISS_KEYWORDS = (
     "pop", "modal", "overlay", "dismiss", "close",
-    "sign-in", "signin", "banner", "dialog", "popup",
+    "sign-in", "signin", "sign in",
+    "banner", "dialog", "popup",
 )
 
 # Task keywords that signal a multi-requirement task.  If ANY of these appear
@@ -292,6 +304,7 @@ _DISMISS_KEYWORDS = (
 _TASK_REQUIREMENT_KEYWORDS = (
     "filter", "4 star", "rating", "badge", "deal", "limited time",
     "price", "save", "bookmark", "find the", "sort by",
+    "password", "username",
 )
 
 
@@ -311,39 +324,42 @@ def _route_after_execute(state: AgentState) -> Literal["execute_step", "plan", "
     if status == "completed":
         replan_count = state.get("replan_count", 0)
         steps = state.get("steps") or []
+        plan = _get_plan(state)
 
-        if replan_count == 0:
-            plan = _get_plan(state)
-            if plan:
-                plan_text = (
-                    f"{plan.summary or ''} "
-                    + " ".join(d.reasoning for d in (plan.decisions or []))
-                ).lower()
+        if plan and replan_count < MAX_REPLANS:
+            plan_text = (
+                f"{plan.summary or ''} "
+                + " ".join(d.reasoning for d in (plan.decisions or []))
+            ).lower()
 
-                # Safeguard A: dismiss-only first plan (pop-up/modal dismissed, actual
-                # task not yet started).
-                if len(steps) <= 2 and any(kw in plan_text for kw in _DISMISS_KEYWORDS):
-                    logger.info(
-                        "[Orchestrator] Dismiss-only completion (steps=%s, summary=%s) — routing to replan.",
-                        len(steps),
-                        (plan.summary or "")[:80],
-                    )
-                    return "plan"
+            # Safeguard A: dismiss-only (pop-up/modal dismissed, actual task not started).
+            # Only on first completion to avoid false positives.
+            if replan_count == 0 and len(steps) <= 2 and any(
+                kw in plan_text for kw in _DISMISS_KEYWORDS
+            ):
+                logger.info(
+                    "[Orchestrator] Dismiss-only completion (steps=%s, summary=%s) — routing to replan.",
+                    len(steps),
+                    (plan.summary or "")[:80],
+                )
+                return "plan"
 
-                # Safeguard B: multi-requirement task where the plan only covered
-                # the FIRST requirement (e.g. just searched, but task also needs
-                # filtering, finding a specific item, getting a price, saving, etc.).
-                task_desc_lower = (state.get("task_description") or "").lower()
-                unmet = [
-                    kw for kw in _TASK_REQUIREMENT_KEYWORDS
-                    if kw in task_desc_lower and kw not in plan_text
-                ]
-                if unmet:
-                    logger.info(
-                        "[Orchestrator] Task has unmet requirements %s — routing to replan.",
-                        unmet,
-                    )
-                    return "plan"
+            # Safeguard B: task has unmet requirements. Run on every completion
+            # until replan budget is exhausted so we keep replanning until the
+            # full task is done (e.g. filter + find deal + price).
+            task_desc_lower = (state.get("task_description") or "").lower()
+            unmet = [
+                kw for kw in _TASK_REQUIREMENT_KEYWORDS
+                if kw in task_desc_lower and kw not in plan_text
+            ]
+            if unmet:
+                logger.info(
+                    "[Orchestrator] Task has unmet requirements %s (replan %s/%s) — routing to replan.",
+                    unmet,
+                    replan_count + 1,
+                    MAX_REPLANS,
+                )
+                return "plan"
 
         return "end"
 

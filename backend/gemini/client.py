@@ -1,4 +1,5 @@
 """Gemini client via langchain-google-genai (API key) or langchain-google-vertexai (Vertex AI)."""
+import asyncio
 import base64
 import json
 import logging
@@ -34,6 +35,7 @@ TASK COMPLETION RULES:
 - "Fill form and submit": Plan type + submit steps. Set taskComplete=true when submission is confirmed.
 - "Navigate to URL": One navigate step is enough; set taskComplete=true.
 - If the user asks to "search and tell me" or "find results", the plan must include submitting the search, not just typing.
+- "Login / sign in task": MUST plan ALL steps: (1) if on homepage, click the Sign in link to reach the login form, (2) type the username/email into the username field, (3) type the password into the password field, (4) click the Sign in / Login button. Set taskComplete=true ONLY after the login button is clicked, not before. A single click to navigate to the login page is NEVER the complete task.
 
 COMPLEX MULTI-STEP TASKS (filtering, sorting, form interactions):
 - Tasks with keywords "filter", "sort", "4 star", "under ₹X / $X", "price range", "category", "rating": require AT LEAST 3 decisions.
@@ -151,19 +153,47 @@ class GeminiClient:
             SystemMessage(content=SYSTEM_PROMPT),
             HumanMessage(content=user_content),
         ]
-        response = await self._llm.ainvoke(messages)
-        text = getattr(response, "content", None) or ""
-        if isinstance(text, list):
-            text = "".join(
-                block.get("text", "") if isinstance(block, dict) else str(block)
-                for block in text
-            )
-        text = (text or "").strip()
-        if not text:
-            logger.warning("Model returned empty content for task: %s", task_description[:80])
-            raise ValueError("Model returned an empty response. Try a shorter or simpler task.")
-        parsed = self._parse_json_response(text)
-        return GeminiResponse.model_validate(parsed)
+        last_error: Optional[Exception] = None
+        for attempt in range(1, 4):  # up to 3 attempts
+            try:
+                response = await self._llm.ainvoke(messages)
+                text = getattr(response, "content", None) or ""
+                if isinstance(text, list):
+                    text = "".join(
+                        block.get("text", "") if isinstance(block, dict) else str(block)
+                        for block in text
+                    )
+                text = (text or "").strip()
+                if not text:
+                    raise ValueError("Model returned an empty response.")
+                parsed = self._parse_json_response(text)
+                return GeminiResponse.model_validate(parsed)
+            except Exception as e:
+                last_error = e
+                err_str = str(e).lower()
+                if "empty" in err_str or "json" in err_str or "invalid response" in err_str:
+                    if attempt < 3:
+                        delay = 1.5 * attempt
+                        logger.warning(
+                            "Plan attempt %s/3 failed (%s), retrying in %.1fs...",
+                            attempt,
+                            str(e)[:60],
+                            delay,
+                        )
+                        await asyncio.sleep(delay)
+                    else:
+                        logger.warning(
+                            "Model returned empty or invalid content for task: %s (after 3 attempts)",
+                            task_description[:80],
+                        )
+                        raise ValueError(
+                            "Model returned an empty or invalid response after retries. Try a shorter or simpler task."
+                        ) from last_error
+                else:
+                    raise
+        raise ValueError(
+            "Model returned an empty or invalid response after retries. Try a shorter or simpler task."
+        ) from last_error
 
     async def resolve_start_url(self, task_description: str) -> str:
         """Given a task description, ask Gemini for the single best starting URL (text-only)."""
