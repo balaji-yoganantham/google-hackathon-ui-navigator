@@ -170,6 +170,26 @@ class BrowserController:
             if directly_fillable:
                 await el.click()
                 await page.fill(selector, action.text)
+                # After filling, check if an autocomplete/suggestions listbox appeared
+                # (common for airport, location and search fields).
+                # If so, press ArrowDown + Enter to confirm the first suggestion so the
+                # overlay closes and the next field becomes interactable.
+                await asyncio.sleep(0.4)
+                try:
+                    listbox = await page.query_selector(
+                        "[role='listbox']:not([aria-hidden='true']), "
+                        "[role='option']:not([aria-hidden='true'])"
+                    )
+                    if listbox and await listbox.is_visible():
+                        logger.debug(
+                            "[type] Autocomplete detected for %s — selecting first suggestion", selector
+                        )
+                        await page.keyboard.press("ArrowDown")
+                        await asyncio.sleep(0.2)
+                        await page.keyboard.press("Enter")
+                        await asyncio.sleep(0.3)
+                except Exception as ac_err:
+                    logger.debug("[type] Autocomplete handling skipped: %s", ac_err)
                 return f'Typed "{action.text}" in {selector}'
 
             # Element is a trigger (e.g. a button that opens a search dialog).

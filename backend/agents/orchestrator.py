@@ -21,8 +21,8 @@ from .planner_agent import PlannerAgent
 
 logger = logging.getLogger(__name__)
 
-MAX_STEPS = 10
-MAX_PLAN_ROUNDS = 5
+MAX_STEPS = 30
+MAX_PLAN_ROUNDS = 15
 SCREENSHOT_OPTS = {"quality": 60, "clip_to_viewport": True}
 
 
@@ -84,12 +84,23 @@ async def _node_plan(state: AgentState) -> dict:
         for s in (state.get("steps") or [])
     ]
 
-    plan = await planner.run(
-        screenshot_bytes,
-        state["task_description"],
-        steps_done=steps_done or None,
-        current_url=current_url,
-    )
+    try:
+        plan = await planner.run(
+            screenshot_bytes,
+            state["task_description"],
+            steps_done=steps_done or None,
+            current_url=current_url,
+        )
+    except Exception as plan_err:
+        logger.error("[Orchestrator] Planning failed: %s", plan_err)
+        return {
+            "current_screenshot": b64,
+            "plan": None,
+            "decision_index": 0,
+            "status": "failed",
+            "error": f"Planning error: {plan_err}",
+        }
+
     if not plan.decisions:
         return {
             "current_screenshot": b64,

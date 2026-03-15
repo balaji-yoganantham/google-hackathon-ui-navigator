@@ -1,5 +1,22 @@
 (function() {
+  // Remove red-number overlay divs from any previous labeling run
   document.querySelectorAll('.wayfinder-label').forEach(el => el.remove());
+
+  // CRITICAL: Clear all stale data-wayfinder-id attributes from every element in the
+  // DOM before assigning new IDs. Without this, elements that were labeled in a
+  // previous round (e.g. dropdown <li> items that are now hidden) keep their old IDs.
+  // When the same numeric ID is re-assigned to a different element in the next round,
+  // Playwright finds 2 matches for the same selector and times out on the wrong one.
+  document.querySelectorAll('[data-wayfinder-id]').forEach(el => {
+    el.removeAttribute('data-wayfinder-id');
+    el.removeAttribute('data-wayfinder-label');
+    el.removeAttribute('data-wayfinder-name');
+    el.removeAttribute('data-wayfinder-placeholder');
+    el.removeAttribute('data-wayfinder-type');
+    el.removeAttribute('data-wayfinder-role');
+    el.removeAttribute('data-wayfinder-tag');
+    el.removeAttribute('data-wayfinder-required');
+  });
 
   function normalizeText(value) {
     return (value || '').replace(/\s+/g, ' ').trim();
@@ -52,6 +69,12 @@
   const interactiveSelectors = [
     'a', 'button', 'input', 'textarea', 'select',
     '[role="button"]', '[role="link"]', '[role="menuitem"]',
+    '[role="option"]',    // dropdown list items (e.g. "One way", "Round trip")
+    '[role="radio"]',     // radio button groups (trip type selector)
+    '[role="checkbox"]',  // checkbox controls
+    '[role="tab"]',       // tab controls
+    '[role="switch"]',    // toggle switches
+    '[role="listitem"][tabindex]', // focusable list items
     '[onclick]', '[tabindex="0"]'
   ];
 

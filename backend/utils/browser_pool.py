@@ -100,17 +100,28 @@ class BrowserPool:
             await page.evaluate("true")
         except Exception as e:
             if self._is_navigation_context_error(e) and self._page and not self._page.is_closed():
-                logger.info("BrowserPool: context destroyed (navigation), waiting for new page to load")
-                try:
-                    await self._page.wait_for_load_state("load", timeout=15_000)
-                    # Give the new document's JS context a moment to fully initialise
-                    await asyncio.sleep(0.3)
-                    # Confirm the context is truly ready before returning
-                    await self._page.evaluate("true")
-                    return
-                except Exception as wait_e:
-                    logger.warning("BrowserPool: page not ready after navigation wait: %s", wait_e)
-            logger.warning("BrowserPool page not responsive: %s", e)
+                logger.info("BrowserPool: context destroyed (navigation), waiting for page to stabilise")
+                # Some sites (e.g. Google) do two back-to-back navigations (search → redirect).
+                # Retry the wait+evaluate loop up to 3 times to survive multiple context resets.
+                for attempt in range(1, 4):
+                    try:
+                        await self._page.wait_for_load_state("load", timeout=15_000)
+                        await asyncio.sleep(0.5 * attempt)  # 0.5s, 1.0s, 1.5s
+                        await self._page.evaluate("true")
+                        logger.info("BrowserPool: page context ready after %d wait(s)", attempt)
+                        return
+                    except Exception as inner_e:
+                        if self._is_navigation_context_error(inner_e):
+                            logger.info(
+                                "BrowserPool: still mid-navigation (attempt %d/3), retrying wait...",
+                                attempt,
+                            )
+                            continue
+                        logger.warning("BrowserPool: unexpected error waiting for page: %s", inner_e)
+                        break
+                logger.warning("BrowserPool: page did not stabilise after 3 navigation waits")
+            else:
+                logger.warning("BrowserPool page not responsive: %s", e)
             await self.close()
             await self.initialize()
 

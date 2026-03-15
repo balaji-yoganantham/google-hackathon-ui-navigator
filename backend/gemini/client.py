@@ -101,9 +101,12 @@ class GeminiClient:
                     project=settings.GOOGLE_CLOUD_PROJECT,
                     location=settings.GOOGLE_CLOUD_LOCATION,
                     temperature=0.2,
-                    max_output_tokens=2048,
+                    max_output_tokens=3000,
                 )
-            logger.info("GeminiClient initialized (Vertex AI) model=%s project=%s", self._model, settings.GOOGLE_CLOUD_PROJECT)
+            logger.info(
+                "GeminiClient initialized (Vertex AI) model=%s project=%s max_output_tokens=3000",
+                self._model, settings.GOOGLE_CLOUD_PROJECT,
+            )
         else:
             from langchain_google_genai import ChatGoogleGenerativeAI
             self._llm = ChatGoogleGenerativeAI(
@@ -121,51 +124,132 @@ class GeminiClient:
         steps_done: list[str] | None = None,
         current_url: str | None = None,
     ) -> GeminiResponse:
-        """Async: screenshot + task → GeminiResponse."""
+        """Async: screenshot + task → GeminiResponse.
+
+        Retries up to 3 times on both empty responses AND non-JSON responses.
+        Uses a simplified prompt on retry attempts to reduce token pressure.
+        """
+        import asyncio as _asyncio
+
+        logger.info(
+            "[plan_task] START task=%.80s url=%s steps_done=%d",
+            task_description, current_url or "unknown", len(steps_done or []),
+        )
+
         base64_str = base64.b64encode(screenshot_bytes).decode("utf-8")
+
+        # Build context block — shared by both full and minimal prompts
         context_parts = []
         if current_url:
             context_parts.append(f"Current page URL: {current_url}")
         if steps_done:
             steps_text = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(steps_done))
-            context_parts.append(f"Steps already executed:\n{steps_text}")
-        context_block = ("\n\n" + "\n".join(context_parts)) if context_parts else ""
-        user_content: list[dict] = [
-            {
-                "type": "image",
-                "base64": base64_str,
-                "mime_type": "image/jpeg",
-            },
-            {
-                "type": "text",
-                "text": f"Task: {task_description}{context_block}\n\nAnalyze the screenshot (red numbers are interactive elements). Return a JSON object with 'decisions', 'summary', 'taskComplete', and optionally 'nextSteps'. Use [data-wayfinder-id='N'] for selectors. One action per decision for this step.",
-            },
-        ]
-        messages = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            HumanMessage(content=user_content),
-        ]
-        response = await self._llm.ainvoke(messages)
-        text = getattr(response, "content", None) or ""
-        if isinstance(text, list):
-            text = "".join(
-                block.get("text", "") if isinstance(block, dict) else str(block)
-                for block in text
+            context_parts.append(
+                f"ALREADY COMPLETED — DO NOT repeat any of these steps, pick up from where they left off:\n{steps_text}"
             )
-        text = (text or "").strip()
-        if not text:
-            logger.warning("Model returned empty content for task: %s", task_description[:80])
-            raise ValueError("Model returned an empty response. Try a shorter or simpler task.")
-        parsed = self._parse_json_response(text)
-        return GeminiResponse.model_validate(parsed)
+        context_block = ("\n\n" + "\n".join(context_parts)) if context_parts else ""
+
+        full_prompt = (
+            f"Task: {task_description}{context_block}\n\n"
+            "Analyze the screenshot (red numbers are interactive elements). "
+            "Determine the NEXT action(s) needed to make progress — do NOT redo any already-completed step. "
+            "Return a JSON object with 'decisions', 'summary', 'taskComplete', and optionally 'nextSteps'. "
+            "Use [data-wayfinder-id='N'] for selectors. One action per decision for this step."
+        )
+        # Minimal fallback prompt — still includes URL + history so the model doesn't lose context
+        minimal_prompt = (
+            f"Task: {task_description}{context_block}\n\n"
+            "Look at the screenshot and decide the NEXT single action to make progress. "
+            "Do NOT repeat any step already listed above. "
+            "Return ONLY a raw JSON object (no markdown) in this exact shape:\n"
+            "{\"decisions\":[{\"action\":{\"type\":\"click\",\"selector\":\"[data-wayfinder-id=\\\"N\\\"]\"},"
+            "\"reasoning\":\"reason\",\"confidence\":0.9}],\"summary\":\"...\",\"taskComplete\":false}"
+        )
+
+        def _build_messages(prompt: str) -> list:
+            return [
+                SystemMessage(content=SYSTEM_PROMPT),
+                HumanMessage(content=[
+                    {"type": "image", "base64": base64_str, "mime_type": "image/jpeg"},
+                    {"type": "text", "text": prompt},
+                ]),
+            ]
+
+        max_retries = 3
+        last_error: Exception | None = None
+
+        for attempt in range(1, max_retries + 1):
+            use_prompt = full_prompt if attempt == 1 else minimal_prompt
+            messages = _build_messages(use_prompt)
+
+            logger.debug("[plan_task] attempt %d/%d — invoking model", attempt, max_retries)
+            response = await self._llm.ainvoke(messages)
+            raw = getattr(response, "content", None) or ""
+            if isinstance(raw, list):
+                raw = "".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in raw
+                )
+            text = (raw or "").strip()
+
+            if not text:
+                logger.warning(
+                    "[plan_task] attempt %d/%d — EMPTY response from model | task=%.80s",
+                    attempt, max_retries, task_description,
+                )
+                last_error = ValueError("Model returned an empty response.")
+                if attempt < max_retries:
+                    wait = 2 ** attempt
+                    logger.info("[plan_task] waiting %ds before retry...", wait)
+                    await _asyncio.sleep(wait)
+                continue
+
+            logger.debug("[plan_task] attempt %d/%d — raw response: %.400s", attempt, max_retries, text)
+
+            try:
+                parsed = self._parse_json_response(text)
+                result = GeminiResponse.model_validate(parsed)
+                if attempt > 1:
+                    logger.info(
+                        "[plan_task] SUCCESS on attempt %d/%d | decisions=%d summary=%.60s",
+                        attempt, max_retries, len(result.decisions), result.summary or "",
+                    )
+                else:
+                    logger.info(
+                        "[plan_task] SUCCESS | decisions=%d summary=%.60s",
+                        len(result.decisions), result.summary or "",
+                    )
+                return result
+            except Exception as parse_err:
+                logger.warning(
+                    "[plan_task] attempt %d/%d — BAD JSON: %s | raw (first 400 chars): %.400s",
+                    attempt, max_retries, parse_err, text,
+                )
+                last_error = parse_err
+                if attempt < max_retries:
+                    wait = 2 ** attempt
+                    logger.info("[plan_task] waiting %ds before retry with simplified prompt...", wait)
+                    await _asyncio.sleep(wait)
+
+        logger.error(
+            "[plan_task] FAILED after %d attempts | last_error=%s | task=%.80s",
+            max_retries, last_error, task_description,
+        )
+        raise last_error or ValueError("Model failed to return valid JSON after all retries.")
 
     async def resolve_start_url(self, task_description: str) -> str:
-        """Given a task description, return the base/home URL only (no deep links or query params)."""
+        """Given a task description, return the best starting URL (preserving service paths, no query params)."""
+        logger.info("[resolve_start_url] Resolving URL for task: %.80s", task_description)
         prompt = (
-            f"Given this task: '{task_description}', reply with ONLY the base or home page URL of the website "
-            "where the user will perform the task. Rules: (1) No query parameters. (2) No path to search results "
-            "or filters (e.g. no /jobs/search?... or /results?...). (3) Just the root or main page, e.g. "
-            "https://www.linkedin.com or https://www.youtube.com or https://www.google.com. Reply with only the URL, no explanation."
+            f"Given this task: '{task_description}', reply with ONLY the best starting URL for this task. "
+            "Rules: (1) No query parameters or search filters. "
+            "(2) If the task uses a specific Google sub-service, use its direct URL "
+            "(e.g. https://www.google.com/flights for flight searches, "
+            "https://www.google.com/maps for maps, https://www.google.com/travel for hotels). "
+            "(3) For other sites use their home page "
+            "(e.g. https://www.linkedin.com, https://www.youtube.com, https://www.amazon.com). "
+            "(4) Include the path if it is a well-known service landing page, but no search query paths. "
+            "Reply with only the URL, no explanation."
         )
         messages = [HumanMessage(content=prompt)]
         response = await self._llm.ainvoke(messages)
@@ -177,20 +261,27 @@ class GeminiClient:
             )
         url = (text or "").strip()
         if not url or not url.lower().startswith("http"):
-            logger.info("[resolve_start_url] Invalid or empty URL from model, using https://www.google.com")
+            logger.warning(
+                "[resolve_start_url] Model returned invalid/empty URL ('%s'), falling back to https://www.google.com",
+                url,
+            )
             return "https://www.google.com"
-        return self._to_base_url(url)
+        final_url = self._to_base_url(url)
+        logger.info("[resolve_start_url] Resolved: '%s' → %s", task_description[:60], final_url)
+        return final_url
 
     @staticmethod
     def _to_base_url(url: str) -> str:
-        """Strip query, fragment, and path so only origin (base/home) URL remains."""
+        """Strip only query params and fragment; preserve scheme, host, and service path."""
         try:
             parsed = urlparse(url)
             if not parsed.scheme or not parsed.netloc:
                 return url
-            clean = urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+            # Keep path (e.g. /flights, /maps) but strip query and fragment
+            clean_path = parsed.path.rstrip("/")
+            clean = urlunparse((parsed.scheme, parsed.netloc, clean_path, "", "", ""))
             if clean != url:
-                logger.info("[resolve_start_url] Normalized to base URL: %s -> %s", url, clean)
+                logger.info("[resolve_start_url] Normalized URL (stripped params): %s -> %s", url, clean)
             return clean
         except Exception as e:
             logger.warning("[resolve_start_url] Failed to normalize URL %s: %s", url, e)

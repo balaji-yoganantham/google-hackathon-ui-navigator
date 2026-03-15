@@ -78,7 +78,18 @@ class ExecutorAgent:
         elif action.type == "scroll":
             await self._browser.smart_wait(300)
 
-        # Remove labels so the stored screenshot is clean (no red numbers)
+        # For click actions, re-apply labels AFTER the wait so that any dynamic content
+        # opened by the click (dropdowns, modals, autocomplete lists) gets numbered.
+        # This means the after-screenshot will show labeled new content for debugging,
+        # and _node_plan will also see labeled dynamic content when it re-labels for re-planning.
+        if action.type == "click":
+            try:
+                await self._browser.add_labels()
+                logger.debug("[ExecutorAgent] Re-labeled page after click action")
+            except Exception as label_err:
+                logger.debug("[ExecutorAgent] Re-label after click skipped: %s", label_err)
+
+        # Remove labels so the stored after-screenshot is clean (no red numbers)
         await self._browser.remove_labels()
         after_screenshot_bytes = await self._browser.screenshot(**opts)
         outcome: Outcome = "complete" if task_complete else "continue"
