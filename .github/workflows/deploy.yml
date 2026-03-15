@@ -59,11 +59,10 @@ jobs:
           region: ${{ env.REGION }}
           flags: --allow-unauthenticated
           env_vars: |
-            USE_VERTEX_AI=False
+            USE_VERTEX_AI=True
             GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }}
-            GOOGLE_CLOUD_LOCATION=${{ env.REGION }}
-            GEMINI_MODEL=gemini-2.0-flash
-            GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
+            GOOGLE_CLOUD_LOCATION=global
+            GEMINI_MODEL=gemini-2.0-flash-001
 
       - name: Set Cloud Run scaling and timeout for SSE
         run: |
