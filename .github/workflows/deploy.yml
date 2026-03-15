@@ -33,6 +33,10 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev
 
+      - name: Authenticate Docker to Artifact Registry
+        run: |
+          echo $(gcloud auth print-access-token) | docker login -u oauth2accesstoken --password-stdin https://${{ env.REGION }}-docker.pkg.dev
+
       - name: Create AR repository (idempotent)
         run: |
           gcloud artifacts repositories create ${{ env.AR_REPO }} \
