@@ -57,7 +57,7 @@ jobs:
           service: ${{ env.SERVICE_NAME }}
           image: ${{ env.IMAGE }}
           region: ${{ env.REGION }}
-          flags: --allow-unauthenticated
+          flags: --allow-unauthenticated --max-instances=1
           env_vars: |
             USE_VERTEX_AI=True
             GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }}

@@ -216,6 +216,17 @@ async def get_task_status(session_id: str) -> dict:
     return _make_task_dict(task)
 
 
+# Origins allowed for CORS on SSE (must match main.py allow_origins for credentials)
+_STREAM_CORS_ORIGINS = frozenset({
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+    "https://project-70591921-7d7a-4043-ba8.web.app",
+    "https://project-70591921-7d7a-4043-ba8.firebaseapp.com",
+})
+
+
 @router.get("/stream/{session_id}")
 async def stream_task(session_id: str, request: Request) -> StreamingResponse:
     async def event_stream():
@@ -237,14 +248,20 @@ async def stream_task(session_id: str, request: Request) -> StreamingResponse:
                 break
             await asyncio.sleep(0.4)
 
+    origin = request.headers.get("origin", "")
+    cors_headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    if origin in _STREAM_CORS_ORIGINS:
+        cors_headers["Access-Control-Allow-Origin"] = origin
+        cors_headers["Access-Control-Allow-Credentials"] = "true"
+
     return StreamingResponse(
         event_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=cors_headers,
     )
 
 
