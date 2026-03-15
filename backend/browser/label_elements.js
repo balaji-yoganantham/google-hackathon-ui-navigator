@@ -33,6 +33,22 @@
     return '';
   }
 
+  function isInViewport(rect) {
+    return rect.right > 0 &&
+           rect.left < window.innerWidth &&
+           rect.bottom > 0 &&
+           rect.top < window.innerHeight;
+  }
+
+  function isAuthPlaceholder(el) {
+    const className = (el.className && typeof el.className === 'string') ? el.className : '';
+    if (!className.toLowerCase().includes('placeholder')) return false;
+    const ariaLabel = normalizeText(el.getAttribute('aria-label') || '');
+    const role = (el.getAttribute('role') || '').toLowerCase();
+    const authPattern = /continue with|sign in with|log in with|google|facebook|apple|microsoft|linkedin/i;
+    return role === 'button' || authPattern.test(ariaLabel);
+  }
+
   const interactiveSelectors = [
     'a', 'button', 'input', 'textarea', 'select',
     '[role="button"]', '[role="link"]', '[role="menuitem"]',
@@ -43,10 +59,14 @@
     .filter(el => {
       const rect = el.getBoundingClientRect();
       const style = window.getComputedStyle(el);
+      const opacity = parseFloat(style.opacity);
       return rect.width > 0 &&
              rect.height > 0 &&
              style.visibility !== 'hidden' &&
-             style.display !== 'none';
+             style.display !== 'none' &&
+             !isNaN(opacity) && opacity > 0.01 &&
+             isInViewport(rect) &&
+             !isAuthPlaceholder(el);
     });
 
   elements.forEach((el, index) => {

@@ -4,15 +4,16 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useAgentStore } from "@/store/agentStore";
 import { executeTask, continueTask, cancelTask, createSSEStream, pollStatus, type BackendTask } from "@/lib/api";
-import { useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 export function TaskDock() {
   const {
     taskDescription, isLoading, isRecording, task, continuingSessionId,
     setTaskDescription, setIsLoading, setIsRecording,
     setTask, updateFromBackendTask, completeTask, failTask, cancelTask: storeCancelTask,
-    clearContinue,
+    clearContinue, reset,
   } = useAgentStore();
+  const [continueInstruction, setContinueInstruction] = useState("");
 
   const recognitionRef = useRef<any>(null);
   const cleanupSSERef = useRef<(() => void) | null>(null);
@@ -141,6 +142,42 @@ export function TaskDock() {
     storeCancelTask();
   }, [task?.sessionId, stopPolling, storeCancelTask]);
 
+  // ── Continue in current session (follow-up instruction) ────────────────────
+  const handleContinueInSession = useCallback(async () => {
+    if (!continueInstruction.trim() || !task?.sessionId || isLoading) return;
+    const instruction = continueInstruction.trim();
+    cleanupSSERef.current?.();
+    stopPolling();
+    setIsLoading(true);
+    setContinueInstruction("");
+    try {
+      const { sessionId, task: taskData } = await continueTask(task.sessionId, instruction);
+      setTask({
+        sessionId,
+        taskDescription: taskData.taskDescription || instruction,
+        startUrl: taskData.startUrl ?? task.startUrl,
+        status: "running",
+        steps: task.steps,
+        currentScreenshot: task.currentScreenshot,
+        startedAt: new Date().toISOString(),
+      });
+      attachStream(sessionId);
+    } catch (err: any) {
+      failTask(err.message || "Failed to continue");
+      stopPolling();
+    }
+  }, [continueInstruction, task, isLoading, stopPolling, attachStream, setIsLoading, setTask, failTask]);
+
+  // ── Clean up stream when task is cleared (e.g. New Task from header) ───────
+  useEffect(() => {
+    if (task == null && cleanupSSERef.current) {
+      cleanupSSERef.current();
+      cleanupSSERef.current = null;
+      stopPolling();
+      setContinueInstruction("");
+    }
+  }, [task, stopPolling]);
+
   // ── Voice ──────────────────────────────────────────────────────────────────
   const handleSpeak = useCallback(() => {
     if (isRecording) {
@@ -255,6 +292,34 @@ export function TaskDock() {
             Stop
           </Button>
         </div>
+
+        {/* Continue in this session — when current task has ended */}
+        {task?.sessionId && ["completed", "failed", "cancelled"].includes(task.status) && (
+          <div className="rounded-md bg-secondary/50 border border-border p-3 space-y-2">
+            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+              Continue in this session
+            </label>
+            <div className="flex gap-2">
+              <Textarea
+                placeholder="What should the agent do next in this session?"
+                value={continueInstruction}
+                onChange={(e) => setContinueInstruction(e.target.value)}
+                className="text-xs bg-background border-border min-h-[44px] resize-none flex-1"
+                rows={1}
+                disabled={isLoading}
+              />
+              <Button
+                size="sm"
+                onClick={handleContinueInSession}
+                disabled={isLoading || !continueInstruction.trim()}
+                className="gap-1.5 text-xs shrink-0"
+              >
+                {isLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
+                Send
+              </Button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

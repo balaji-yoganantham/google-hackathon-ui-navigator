@@ -144,5 +144,16 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     };
   }),
 
-  reset: () => set({ task: null, isLoading: false, taskDescription: '', continuingSessionId: null, selectedStepScreenshot: null }),
+  reset: () => set((state) => {
+    const current = state.task;
+    const nextHistory = current ? [current, ...state.history] : state.history;
+    return {
+      task: null,
+      isLoading: false,
+      taskDescription: '',
+      continuingSessionId: null,
+      selectedStepScreenshot: null,
+      history: nextHistory,
+    };
+  }),
 }));

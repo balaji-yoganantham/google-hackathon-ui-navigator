@@ -141,7 +141,7 @@ class BrowserController:
         if t == "click":
             if not selector:
                 raise ValueError("Selector required for click action")
-            await page.wait_for_selector(selector, timeout=3_000)
+            await page.wait_for_selector(selector, state="visible", timeout=3_000)
             el = await page.query_selector(selector)
             if not el:
                 raise ValueError(f"Element not found: {selector}")
@@ -151,7 +151,7 @@ class BrowserController:
         if t == "type":
             if not selector or not action.text:
                 raise ValueError("Selector and text required for type action")
-            await page.wait_for_selector(selector, timeout=3_000)
+            await page.wait_for_selector(selector, state="visible", timeout=3_000)
             el = await page.query_selector(selector)
             if not el:
                 raise ValueError(f"Element not found: {selector}")
@@ -234,7 +234,7 @@ class BrowserController:
         if t == "hover":
             if not selector:
                 raise ValueError("Selector required for hover action")
-            await page.wait_for_selector(selector, timeout=3_000)
+            await page.wait_for_selector(selector, state="visible", timeout=3_000)
             await page.hover(selector)
             return f"Hovered over {selector}"
 
@@ -258,6 +258,19 @@ class BrowserController:
             page = await browser_pool.get_page()
             return await fn(page, *args, **kwargs)
         except Exception as e:
+            if self._is_navigation_context_error(e):
+                logger.info(
+                    "BrowserController: context destroyed during %s — waiting for new page to load before retry",
+                    label,
+                )
+                try:
+                    page = await browser_pool.get_page()
+                    await page.wait_for_load_state("load", timeout=15_000)
+                except Exception as wait_e:
+                    logger.debug("BrowserController: wait_for_load after context error: %s", wait_e)
+                await asyncio.sleep(0.4)
+                page = await browser_pool.get_page()
+                return await fn(page, *args, **kwargs)
             if self._is_page_closed_error(e):
                 logger.info("BrowserController page closed during %s, reinitializing", label)
                 await browser_pool.close()
@@ -265,6 +278,14 @@ class BrowserController:
                 page = await browser_pool.get_page()
                 return await fn(page, *args, **kwargs)
             raise
+
+    @staticmethod
+    def _is_navigation_context_error(err: Exception) -> bool:
+        msg = str(getattr(err, "message", err) or "").lower()
+        return (
+            "execution context was destroyed" in msg
+            or "most likely because of a navigation" in msg
+        )
 
     @staticmethod
     def _is_page_closed_error(err: Exception) -> bool:

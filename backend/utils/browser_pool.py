@@ -103,9 +103,13 @@ class BrowserPool:
                 logger.info("BrowserPool: context destroyed (navigation), waiting for new page to load")
                 try:
                     await self._page.wait_for_load_state("load", timeout=15_000)
+                    # Give the new document's JS context a moment to fully initialise
+                    await asyncio.sleep(0.3)
+                    # Confirm the context is truly ready before returning
+                    await self._page.evaluate("true")
                     return
                 except Exception as wait_e:
-                    logger.warning("BrowserPool wait after navigation failed: %s", wait_e)
+                    logger.warning("BrowserPool: page not ready after navigation wait: %s", wait_e)
             logger.warning("BrowserPool page not responsive: %s", e)
             await self.close()
             await self.initialize()
