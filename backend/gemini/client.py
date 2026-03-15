@@ -100,7 +100,7 @@ class GeminiClient:
                     model=self._model,
                     project=settings.GOOGLE_CLOUD_PROJECT,
                     location=settings.GOOGLE_CLOUD_LOCATION,
-                    temperature=0.2,
+                    temperature=0,
                     max_output_tokens=3000,
                 )
             logger.info(
