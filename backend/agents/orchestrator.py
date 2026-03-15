@@ -102,6 +102,19 @@ async def _node_plan(state: AgentState) -> dict:
         }
 
     if not plan.decisions:
+        # Model returned a summary with no further actions → task is complete
+        summary = (plan.summary or "").strip()
+        if plan.taskComplete or len(summary) > 10:
+            logger.info("[Orchestrator] Task complete — agent returned answer: %s", summary[:120])
+            return {
+                "current_screenshot": b64,
+                "plan": plan.model_dump(),
+                "decision_index": 0,
+                "status": "completed",
+                "final_answer": summary,
+            }
+        # Genuinely could not plan
+        logger.warning("[Orchestrator] No decisions and no meaningful summary — marking failed")
         return {
             "current_screenshot": b64,
             "plan": None,
@@ -290,6 +303,8 @@ async def run_task(
                 task.error = node_state["error"]
             if "start_url" in node_state:
                 task.startUrl = node_state["start_url"]
+            if "final_answer" in node_state and node_state["final_answer"]:
+                task.finalAnswer = node_state["final_answer"]
         _emit()
         if get_cancelled and get_cancelled():
             task.status = "cancelled"

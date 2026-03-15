@@ -55,6 +55,7 @@ class TaskExecution(BaseModel):
     steps: list[ExecutionStep] = Field(default_factory=list)
     currentScreenshot: str = ""
     error: Optional[str] = None
+    finalAnswer: Optional[str] = None  # agent's final answer/summary when task completes
     suggestions: Optional[list[Suggestion]] = None
     startUrl: Optional[str] = None
     createdAt: datetime = Field(default_factory=datetime.utcnow)

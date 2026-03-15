@@ -24,6 +24,7 @@ export interface AgentTask {
   steps: ExecutionStep[];
   currentScreenshot?: string;
   error?: string;
+  finalAnswer?: string;
   startedAt?: string;
   completedAt?: string;
 }
@@ -106,6 +107,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         steps: mapped.steps as ExecutionStep[],
         currentScreenshot: mapped.currentScreenshot,
         error: mapped.error,
+        finalAnswer: mapped.finalAnswer ?? state.task.finalAnswer,
         taskDescription: mapped.taskDescription || state.task.taskDescription,
         startUrl: mapped.startUrl ?? state.task.startUrl,
       },

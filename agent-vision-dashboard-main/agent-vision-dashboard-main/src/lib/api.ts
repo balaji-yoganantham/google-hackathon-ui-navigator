@@ -33,6 +33,7 @@ export interface BackendTask {
   steps: BackendStep[];
   currentScreenshot: string;  // raw base64 jpeg
   error?: string;
+  finalAnswer?: string;       // agent's final answer when task completes with no further actions
   startUrl?: string;
   createdAt: string;
   updatedAt: string;
@@ -61,6 +62,7 @@ export function mapBackendTask(raw: BackendTask) {
     status: raw.status,
     startUrl: raw.startUrl,
     error: raw.error,
+    finalAnswer: raw.finalAnswer,
     currentScreenshot: raw.currentScreenshot ? toDataUrl(raw.currentScreenshot) : undefined,
     steps: (raw.steps || []).map((s) => ({
       stepNumber: s.stepNumber,

@@ -1,4 +1,4 @@
-import { Mic, Send, Square, Loader2, RotateCcw, X } from "lucide-react";
+import { Mic, Send, Square, Loader2, RotateCcw, X, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
@@ -292,6 +292,19 @@ export function TaskDock() {
             Stop
           </Button>
         </div>
+
+        {/* Final answer box — shown whenever the agent produced an answer */}
+        {task?.finalAnswer && (
+          <div className="rounded-md border border-primary/40 bg-primary/10 p-3 space-y-1.5">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
+              <Sparkles className="h-3.5 w-3.5 shrink-0" />
+              Agent Answer
+            </div>
+            <p className="text-xs text-foreground leading-relaxed whitespace-pre-wrap break-words">
+              {task.finalAnswer}
+            </p>
+          </div>
+        )}
 
         {/* Continue in this session — when current task has ended */}
         {task?.sessionId && ["completed", "failed", "cancelled"].includes(task.status) && (

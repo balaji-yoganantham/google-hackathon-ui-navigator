@@ -129,6 +129,48 @@ class BrowserController:
         except Exception as e:
             raise RuntimeError(f"Failed to execute action: {e}") from e
 
+    async def _dismiss_overlay(self, page: Page, selector: str) -> None:
+        """
+        After filling an input, dismiss any autocomplete / location-picker overlay
+        that is blocking the UI.  Strategy (in order):
+
+        1. If a listbox or option row is visible → ArrowDown + Enter (select first suggestion).
+        2. If a dialog is still open after step 1 (or if no listbox was found) →
+           attempt ArrowDown + Enter once more, then press Escape as a fallback.
+        3. Sleep briefly to let animations settle.
+        """
+        async def _dialog_visible() -> bool:
+            try:
+                dlg = await page.query_selector("[role='dialog']:not([aria-hidden='true'])")
+                return bool(dlg and await dlg.is_visible())
+            except Exception:
+                return False
+
+        # Step 1 — try to confirm first autocomplete suggestion via listbox/option
+        listbox = await page.query_selector(
+            "[role='listbox']:not([aria-hidden='true']), "
+            "[role='option']:not([aria-hidden='true'])"
+        )
+        if listbox and await listbox.is_visible():
+            logger.debug("[type] Autocomplete listbox detected for %s — pressing ArrowDown+Enter", selector)
+            await page.keyboard.press("ArrowDown")
+            await asyncio.sleep(0.2)
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(0.4)
+
+        # Step 2 — if a dialog overlay is STILL visible, try ArrowDown+Enter again then Escape
+        if await _dialog_visible():
+            logger.debug("[type] Dialog overlay still open after autocomplete — retrying ArrowDown+Enter")
+            await page.keyboard.press("ArrowDown")
+            await asyncio.sleep(0.2)
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(0.4)
+
+        if await _dialog_visible():
+            logger.debug("[type] Dialog overlay persists — pressing Escape to close")
+            await page.keyboard.press("Escape")
+            await asyncio.sleep(0.4)
+
     async def _execute_action_impl(
         self,
         page: Page,
@@ -170,26 +212,13 @@ class BrowserController:
             if directly_fillable:
                 await el.click()
                 await page.fill(selector, action.text)
-                # After filling, check if an autocomplete/suggestions listbox appeared
-                # (common for airport, location and search fields).
-                # If so, press ArrowDown + Enter to confirm the first suggestion so the
-                # overlay closes and the next field becomes interactable.
-                await asyncio.sleep(0.4)
+                # After filling, dismiss any autocomplete / location-picker dialog that
+                # appeared (common on Google Flights origin/destination, Google Maps, etc.).
+                await asyncio.sleep(0.5)
                 try:
-                    listbox = await page.query_selector(
-                        "[role='listbox']:not([aria-hidden='true']), "
-                        "[role='option']:not([aria-hidden='true'])"
-                    )
-                    if listbox and await listbox.is_visible():
-                        logger.debug(
-                            "[type] Autocomplete detected for %s — selecting first suggestion", selector
-                        )
-                        await page.keyboard.press("ArrowDown")
-                        await asyncio.sleep(0.2)
-                        await page.keyboard.press("Enter")
-                        await asyncio.sleep(0.3)
+                    await self._dismiss_overlay(page, selector)
                 except Exception as ac_err:
-                    logger.debug("[type] Autocomplete handling skipped: %s", ac_err)
+                    logger.debug("[type] Overlay dismissal skipped: %s", ac_err)
                 return f'Typed "{action.text}" in {selector}'
 
             # Element is a trigger (e.g. a button that opens a search dialog).
