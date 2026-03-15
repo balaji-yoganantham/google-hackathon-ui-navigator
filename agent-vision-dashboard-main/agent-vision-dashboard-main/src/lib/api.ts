@@ -19,9 +19,10 @@ export interface BackendStep {
   stepNumber: number;
   description: string;
   action: BackendAction;
-  screenshot: string;   // raw base64 jpeg
+  screenshot: string;        // raw base64 jpeg (after action)
+  beforeScreenshot?: string;  // raw base64 jpeg (before action)
   reasoning: string;
-  result: string;       // e.g. "Clicked on ...", "Failed: ..."
+  result: string;             // e.g. "Clicked on ...", "Failed: ..."
   timestamp: string;
 }
 
@@ -67,6 +68,7 @@ export function mapBackendTask(raw: BackendTask) {
       reasoning: s.reasoning || s.description || '',
       result: mapResult(s.result),
       screenshotUrl: s.screenshot ? toDataUrl(s.screenshot) : undefined,
+      beforeScreenshotUrl: s.beforeScreenshot ? toDataUrl(s.beforeScreenshot) : undefined,
       timestamp: s.timestamp || new Date().toISOString(),
     })),
   };

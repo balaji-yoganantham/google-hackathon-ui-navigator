@@ -130,6 +130,7 @@ async def _node_execute_step(state: AgentState) -> dict:
         description=decision.reasoning,
         action=decision.action,
         screenshot=base64.b64encode(exec_result.screenshot_bytes).decode("utf-8"),
+        beforeScreenshot=base64.b64encode(exec_result.before_screenshot_bytes).decode("utf-8"),
         reasoning=decision.reasoning,
         result=exec_result.result,
         timestamp=datetime.utcnow(),

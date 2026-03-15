@@ -39,6 +39,7 @@ class ExecutionStep(BaseModel):
     description: str
     action: BrowserAction
     screenshot: str = ""
+    beforeScreenshot: str = ""
     reasoning: str
     result: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)

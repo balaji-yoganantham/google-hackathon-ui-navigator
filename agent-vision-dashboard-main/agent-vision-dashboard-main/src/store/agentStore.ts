@@ -12,6 +12,7 @@ export interface ExecutionStep {
   reasoning: string;
   result: 'success' | 'fail' | 'pending';
   screenshotUrl?: string;
+  beforeScreenshotUrl?: string;
   timestamp: string;
 }
 

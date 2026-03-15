@@ -32,11 +32,14 @@ const actionColors: Record<string, string> = {
 
 function StepCard({ step, onSelect }: { step: ExecutionStep; onSelect?: (url: string) => void }) {
   const Icon = actionIcons[step.actionType] || MousePointer;
+  const hasBefore = !!step.beforeScreenshotUrl;
+  const hasAfter = !!step.screenshotUrl;
+  const hasAnyScreenshot = hasBefore || hasAfter;
 
   return (
     <div
-      className={`slide-in rounded-md bg-secondary/50 border border-border p-3 space-y-2 ${step.screenshotUrl ? 'cursor-pointer hover:border-primary/50 transition-colors' : ''}`}
-      onClick={() => step.screenshotUrl && onSelect?.(step.screenshotUrl)}
+      className={`slide-in rounded-md bg-secondary/50 border border-border p-3 space-y-2 ${hasAnyScreenshot ? 'cursor-pointer hover:border-primary/50 transition-colors' : ''}`}
+      onClick={() => (step.screenshotUrl && onSelect?.(step.screenshotUrl)) || (step.beforeScreenshotUrl && onSelect?.(step.beforeScreenshotUrl))}
     >
       <div className="flex items-center gap-2">
         <Badge variant="outline" className="font-mono text-[10px] px-1.5 py-0 h-5 min-w-[28px] justify-center">
@@ -53,16 +56,28 @@ function StepCard({ step, onSelect }: { step: ExecutionStep; onSelect?: (url: st
         </div>
       </div>
       <p className="text-xs font-mono text-muted-foreground leading-relaxed">{step.reasoning}</p>
-      {step.screenshotUrl && (
-        <div className="relative">
-          <img
-            src={step.screenshotUrl}
-            alt={`Step ${step.stepNumber}`}
-            className="w-full h-16 object-cover rounded border border-border"
-          />
-          <div className="absolute inset-0 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity bg-black/40 rounded">
-            <span className="text-[10px] text-white font-medium">Click to expand</span>
-          </div>
+      {(hasBefore || hasAfter) && (
+        <div className="grid grid-cols-2 gap-1.5">
+          {hasBefore && (
+            <div className="relative" onClick={(e) => { e.stopPropagation(); onSelect?.(step.beforeScreenshotUrl!); }}>
+              <img
+                src={step.beforeScreenshotUrl}
+                alt={`Step ${step.stepNumber} before`}
+                className="w-full h-14 object-cover rounded border border-border"
+              />
+              <div className="absolute bottom-0 left-0 right-0 bg-black/60 rounded-b text-[9px] text-center text-white py-0.5">Before</div>
+            </div>
+          )}
+          {hasAfter && (
+            <div className="relative" onClick={(e) => { e.stopPropagation(); onSelect?.(step.screenshotUrl!); }}>
+              <img
+                src={step.screenshotUrl}
+                alt={`Step ${step.stepNumber} after`}
+                className="w-full h-14 object-cover rounded border border-border"
+              />
+              <div className="absolute bottom-0 left-0 right-0 bg-black/60 rounded-b text-[9px] text-center text-white py-0.5">After</div>
+            </div>
+          )}
         </div>
       )}
     </div>

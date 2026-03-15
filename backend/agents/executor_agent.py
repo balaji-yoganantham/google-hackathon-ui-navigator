@@ -13,9 +13,10 @@ Outcome = Literal["continue", "replan", "complete"]
 
 @dataclass
 class ExecutorResult:
-    """Result of executing one action."""
+    """Result of executing one action (before + after screenshots)."""
     result: str
-    screenshot_bytes: bytes
+    screenshot_bytes: bytes  # after action
+    before_screenshot_bytes: bytes  # before action
     success: bool
     outcome: Outcome  # continue to next step, replan, or task complete
 
@@ -42,21 +43,25 @@ class ExecutorAgent:
 
         # Re-add wayfinder labels so [data-wayfinder-id='N'] selectors exist at execution time
         await self._browser.add_labels()
+        # Capture before-action screenshot (clean, no labels)
+        await self._browser.remove_labels()
+        before_screenshot_bytes = await self._browser.screenshot(**opts)
+        await self._browser.add_labels()
 
         try:
             result_msg = await self._browser.execute_action(action)
             logger.info("[ExecutorAgent] Action succeeded: %s", result_msg)
         except Exception as e:
             logger.warning("[ExecutorAgent] Action failed: %s", e)
-            # Remove labels and take screenshot of failure state
             try:
                 await self._browser.remove_labels()
-                screenshot_bytes = await self._browser.screenshot(**opts)
+                after_screenshot_bytes = await self._browser.screenshot(**opts)
             except Exception:
-                screenshot_bytes = b""
+                after_screenshot_bytes = b""
             return ExecutorResult(
                 result=f"Failed: {e}",
-                screenshot_bytes=screenshot_bytes,
+                screenshot_bytes=after_screenshot_bytes,
+                before_screenshot_bytes=before_screenshot_bytes,
                 success=False,
                 outcome="replan",
             )
@@ -75,11 +80,12 @@ class ExecutorAgent:
 
         # Remove labels so the stored screenshot is clean (no red numbers)
         await self._browser.remove_labels()
-        screenshot_bytes = await self._browser.screenshot(**opts)
+        after_screenshot_bytes = await self._browser.screenshot(**opts)
         outcome: Outcome = "complete" if task_complete else "continue"
         return ExecutorResult(
             result=result_msg,
-            screenshot_bytes=screenshot_bytes,
+            screenshot_bytes=after_screenshot_bytes,
+            before_screenshot_bytes=before_screenshot_bytes,
             success=True,
             outcome=outcome,
         )
