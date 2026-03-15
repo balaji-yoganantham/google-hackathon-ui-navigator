@@ -49,6 +49,9 @@ app.add_middleware(
         # Vite default dev port (agent-vision-dashboard uses 8080)
         "http://localhost:8080",
         "http://127.0.0.1:8080",
+        # Firebase Hosting (production frontend)
+        "https://project-70591921-7d7a-4043-ba8.web.app",
+        "https://project-70591921-7d7a-4043-ba8.firebaseapp.com",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE"],
