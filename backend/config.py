@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     # Google / Gemini
     GOOGLE_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_MODEL: str = "gemini-2.0-flash-001"
 
     # Vertex AI (when USE_VERTEX_AI=true)
     USE_VERTEX_AI: bool = False
