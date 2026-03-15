@@ -1,6 +1,7 @@
 """Agent API: execute, status, stream SSE, continue, cancel, history."""
 import asyncio
 import json
+import time
 import uuid
 from datetime import datetime
 from typing import Any, Optional
@@ -232,6 +233,8 @@ async def stream_task(session_id: str, request: Request) -> StreamingResponse:
     async def event_stream():
         last_steps = -1
         last_status = ""
+        last_heartbeat = time.monotonic()
+        heartbeat_interval = 15.0  # send keepalive so proxies don't close the stream
         while True:
             if await request.is_disconnected():
                 break
@@ -246,6 +249,10 @@ async def stream_task(session_id: str, request: Request) -> StreamingResponse:
                 yield f"data: {json.dumps(_make_task_dict(task))}\n\n"
             if task.status in ("completed", "failed", "cancelled"):
                 break
+            now = time.monotonic()
+            if now - last_heartbeat >= heartbeat_interval:
+                yield ": keepalive\n\n"
+                last_heartbeat = now
             await asyncio.sleep(0.4)
 
     origin = request.headers.get("origin", "")
