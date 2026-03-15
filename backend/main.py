@@ -54,8 +54,9 @@ app.add_middleware(
         "https://project-70591921-7d7a-4043-ba8.firebaseapp.com",
     ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["Content-Type", "Authorization"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 app.include_router(agent.router)

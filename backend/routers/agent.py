@@ -211,6 +211,7 @@ async def execute_task(body: ExecuteBody) -> dict:
 
 @router.get("/status/{session_id}")
 async def get_task_status(session_id: str) -> dict:
+    """GET /api/agent/status/{session_id}. Returns 404 if session is missing (e.g. created on another instance)."""
     task = session_manager.get_session(session_id)
     if not task:
         raise HTTPException(404, "Session not found")
