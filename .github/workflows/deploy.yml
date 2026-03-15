@@ -62,7 +62,7 @@ jobs:
             USE_VERTEX_AI=True
             GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }}
             GOOGLE_CLOUD_LOCATION=us-central1
-            GEMINI_MODEL=gemini-1.5-flash-002
+            GEMINI_MODEL=gemini-2.5-flash
 
       - name: Set Cloud Run scaling and timeout for SSE
         run: |
