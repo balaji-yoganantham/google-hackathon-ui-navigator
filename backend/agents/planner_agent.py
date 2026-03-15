@@ -14,10 +14,21 @@ class PlannerAgent:
     def __init__(self, gemini_client: Optional[GeminiClient] = None) -> None:
         self._client = gemini_client or GeminiClient()
 
-    async def run(self, screenshot_bytes: bytes, task_description: str) -> GeminiResponse:
+    async def run(
+        self,
+        screenshot_bytes: bytes,
+        task_description: str,
+        steps_done: list[str] | None = None,
+        current_url: str | None = None,
+    ) -> GeminiResponse:
         """Produce a full action plan from one screenshot and the user task."""
         logger.info("[PlannerAgent] Planning task: %s", task_description[:80])
-        plan = await self._client.plan_task(screenshot_bytes, task_description)
+        plan = await self._client.plan_task(
+            screenshot_bytes,
+            task_description,
+            steps_done=steps_done,
+            current_url=current_url,
+        )
         logger.info(
             "[PlannerAgent] Plan: %s decisions, summary=%s",
             len(plan.decisions),

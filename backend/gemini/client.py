@@ -29,6 +29,20 @@ TASK COMPLETION RULES:
 - "Navigate to URL": Use a single "navigate" step ONLY when the user explicitly asks to open a specific URL (e.g. "open this exact URL"). Otherwise do NOT use navigate to jump to search results or filtered pages.
 - If the user asks to "search and tell me" or "find results", the plan must include submitting the search, not just typing.
 
+MULTI-PHASE TASK RULES (important for tasks like "search and then play/click/open"):
+- You only see the CURRENT page in the screenshot. Plan only the actions visible on this page.
+- If the task requires actions on a FUTURE page (e.g. click search result, click play on video), do NOT try to plan those now. Set taskComplete=false and the system will re-plan after the current actions run.
+- Set taskComplete=true ONLY when the ENTIRE user goal is fully achieved — e.g. the video is playing, the result page is open, the form was submitted.
+- EXAMPLES:
+  * Task: "play Madan Gowri recent video" on YouTube home → Plan: [type "madan gowri", press Enter]. taskComplete=false. After re-plan on results page → Plan: [click first video]. taskComplete=true.
+  * Task: "search for jobs on LinkedIn" on LinkedIn home → Plan: [click Jobs, type "Senior AI Engineer", press Enter]. taskComplete=false. After re-plan on results page → taskComplete=true.
+  * Task: "open Google and search cats" on Google home → Plan: [type "cats", press Enter]. After re-plan when results visible → taskComplete=true.
+
+STUCK / REPEATED STEPS RULE:
+- If "Steps already executed" shows you already tried the same action (e.g. type + click search, or type + click button) and the Current page URL has NOT changed to a results page, that approach did NOT work.
+- In that case, use a DIFFERENT method: if you clicked a button, try "press Enter" instead. If you pressed Enter, try clicking the submit button with a different label number.
+- Never plan the exact same sequence of actions if the prior attempt failed to change the page.
+
 NAVIGATION RULES (step-by-step like a user):
 - You start on the site's base/home page. Do NOT plan a "navigate" action to a URL that contains search query params or deep links (e.g. /jobs/search?keywords=..., /results?search_query=...).
 - For job search, product search, or any "search for X" task: plan actions from the CURRENT page (click search box, type, press Enter or click search). Never use "navigate" to a pre-built search URL unless the user literally says "open this exact URL".
@@ -61,7 +75,7 @@ CRITICAL RULES:
 ✓ SELECTOR: Use ONLY [data-wayfinder-id="N"] where N is the red number on the element. NEVER use aria-label, class, id, or any other selector.
 ✓ Always mention the label number in reasoning (e.g. "Type into search box labeled 10").
 ✓ Plan the FULL sequence: return 2-6 decisions when the task needs multiple actions (search = type + submit; form = fill + submit).
-✓ Set taskComplete=true only on the LAST decision when the goal is achieved (e.g. search results visible).
+✓ Set taskComplete=true ONLY when the ENTIRE user goal is done (video playing, result open, etc.). If more steps will be needed from a new page, set taskComplete=false — the system re-plans automatically.
 ✓ Do NOT use a "navigate" decision to a search-URL or filtered-URL; plan from current UI (type in search box, press Enter, click buttons).
 ✓ NO markdown code blocks - pure JSON only"""
 
@@ -101,10 +115,21 @@ class GeminiClient:
             logger.info("GeminiClient initialized (API key) model=%s", self._model)
 
     async def plan_task(
-        self, screenshot_bytes: bytes, task_description: str
+        self,
+        screenshot_bytes: bytes,
+        task_description: str,
+        steps_done: list[str] | None = None,
+        current_url: str | None = None,
     ) -> GeminiResponse:
         """Async: screenshot + task → GeminiResponse."""
         base64_str = base64.b64encode(screenshot_bytes).decode("utf-8")
+        context_parts = []
+        if current_url:
+            context_parts.append(f"Current page URL: {current_url}")
+        if steps_done:
+            steps_text = "\n".join(f"  {i+1}. {s}" for i, s in enumerate(steps_done))
+            context_parts.append(f"Steps already executed:\n{steps_text}")
+        context_block = ("\n\n" + "\n".join(context_parts)) if context_parts else ""
         user_content: list[dict] = [
             {
                 "type": "image",
@@ -113,7 +138,7 @@ class GeminiClient:
             },
             {
                 "type": "text",
-                "text": f"Task: {task_description}\n\nAnalyze the screenshot (red numbers are interactive elements). Return a JSON object with 'decisions', 'summary', 'taskComplete', and optionally 'nextSteps'. Use [data-wayfinder-id='N'] for selectors. One action per decision for this step.",
+                "text": f"Task: {task_description}{context_block}\n\nAnalyze the screenshot (red numbers are interactive elements). Return a JSON object with 'decisions', 'summary', 'taskComplete', and optionally 'nextSteps'. Use [data-wayfinder-id='N'] for selectors. One action per decision for this step.",
             },
         ]
         messages = [

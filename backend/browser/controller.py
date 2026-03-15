@@ -115,6 +115,10 @@ class BrowserController:
         el = await page.query_selector(selector)
         return el is not None
 
+    async def get_current_url(self) -> str:
+        page = await browser_pool.get_page()
+        return page.url
+
     async def execute_action(self, action: BrowserAction) -> str:
         try:
             return await self._with_page_retry(

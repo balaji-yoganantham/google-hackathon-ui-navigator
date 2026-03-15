@@ -22,6 +22,7 @@ from .planner_agent import PlannerAgent
 logger = logging.getLogger(__name__)
 
 MAX_STEPS = 10
+MAX_PLAN_ROUNDS = 5
 SCREENSHOT_OPTS = {"quality": 60, "clip_to_viewport": True}
 
 
@@ -37,6 +38,7 @@ class AgentState(TypedDict, total=False):
     status: TaskStatus
     error: str | None
     cancelled: bool
+    plan_round: int
     _screenshot_bytes: bytes
 
 
@@ -69,12 +71,25 @@ async def _node_plan(state: AgentState) -> dict:
     """Add labels, screenshot, call planner; set plan and decision_index."""
     browser = _get_browser()
     planner = _get_planner()
+    # Get current URL so the planner knows where it is
+    current_url = await browser.get_current_url()
     await browser.add_labels()
     screenshot_bytes = await browser.screenshot(**SCREENSHOT_OPTS)
     await browser.remove_labels()
     b64 = base64.b64encode(screenshot_bytes).decode("utf-8")
 
-    plan = await planner.run(screenshot_bytes, state["task_description"])
+    # Build a summary of steps already done for the planner
+    steps_done = [
+        f"{s.action.type}: {s.reasoning}"
+        for s in (state.get("steps") or [])
+    ]
+
+    plan = await planner.run(
+        screenshot_bytes,
+        state["task_description"],
+        steps_done=steps_done or None,
+        current_url=current_url,
+    )
     if not plan.decisions:
         return {
             "current_screenshot": b64,
@@ -88,6 +103,7 @@ async def _node_plan(state: AgentState) -> dict:
         "current_screenshot": b64,
         "plan": plan.model_dump(),
         "decision_index": 0,
+        "plan_round": state.get("plan_round", 0) + 1,
         "_screenshot_bytes": screenshot_bytes,
     }
 
@@ -147,9 +163,6 @@ async def _node_execute_step(state: AgentState) -> dict:
     elif not exec_result.success:
         new_status = "failed"
         # Could route to plan for replan; for simplicity we stop on first failure here
-    if next_index >= len(plan.decisions):
-        if new_status == "running":
-            new_status = "completed"
 
     return {
         "steps": steps,
@@ -172,15 +185,21 @@ def _route_after_plan(state: AgentState) -> Literal["execute_step", "end"]:
 def _route_after_execute(state: AgentState) -> Literal["execute_step", "plan", "end"]:
     if state.get("cancelled"):
         return "end"
-    if state.get("status") in ("completed", "failed", "cancelled"):
+    status = state.get("status")
+    if status in ("completed", "failed", "cancelled"):
+        return "end"
+    # Hard limits
+    if len(state.get("steps") or []) >= MAX_STEPS:
         return "end"
     plan = _get_plan(state)
     idx = state.get("decision_index", 0)
-    if not plan or not plan.decisions or idx >= len(plan.decisions):
-        return "end"
-    if not settings.SINGLE_MODEL_REQUEST_MODE and state.get("error"):
+    # Still have decisions left in the current plan — keep executing
+    if plan and plan.decisions and idx < len(plan.decisions):
+        return "execute_step"
+    # All decisions done but task not complete — re-plan from new screenshot
+    if state.get("plan_round", 0) < MAX_PLAN_ROUNDS:
         return "plan"
-    return "execute_step"
+    return "end"
 
 
 def build_agent_graph():
@@ -227,6 +246,7 @@ async def run_task(
         "status": "running",
         "error": None,
         "cancelled": False,
+        "plan_round": 0,
     }
 
     graph = build_agent_graph()
