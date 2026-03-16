@@ -138,7 +138,7 @@ npm run dev
 
 - **Frontend** — Firebase Hosting. Build with `npm run build` in the dashboard app, then `firebase deploy`. SPA: all routes rewrite to `index.html`.
 
-- **Live backend (example):** `https://percept-backend-94139147538.us-central1.run.app`  
+- **Live backend (example):** `https://ui-navigator-backend-94139147538.us-central1.run.app`  
 - **GCP project (example):** `project-70591921`
 
 ---

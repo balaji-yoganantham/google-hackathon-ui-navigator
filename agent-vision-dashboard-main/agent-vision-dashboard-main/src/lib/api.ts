@@ -2,7 +2,7 @@
 // In production, if unset, fall back to the deployed Cloud Run backend so the hosted app works.
 // In dev, if empty use '' so /api/* goes through the Vite dev proxy → localhost:8000.
 const VITE_URL: string = import.meta.env.VITE_API_URL ?? '';
-const PROD_BACKEND_URL = 'https://percept-backend-94139147538.us-central1.run.app';
+const PROD_BACKEND_URL = 'https://ui-navigator-backend-94139147538.us-central1.run.app';
 const API_BASE =
   VITE_URL.trim() !== ''
     ? VITE_URL
