@@ -98,13 +98,28 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   })),
 
   updateFromBackendTask: (raw) => set((state) => {
-    if (!state.task) return {};
     const mapped = mapBackendTask(raw);
+    const status = mapped.status as AgentTask['status'];
+    const steps = mapped.steps as ExecutionStep[];
+    if (!state.task) {
+      return {
+        task: {
+          sessionId: raw.id,
+          taskDescription: mapped.taskDescription || '',
+          status,
+          steps,
+          currentScreenshot: mapped.currentScreenshot,
+          error: mapped.error,
+          finalAnswer: mapped.finalAnswer,
+          startUrl: mapped.startUrl,
+        },
+      };
+    }
     return {
       task: {
         ...state.task,
-        status: mapped.status as AgentTask['status'],
-        steps: mapped.steps as ExecutionStep[],
+        status,
+        steps,
         currentScreenshot: mapped.currentScreenshot,
         error: mapped.error,
         finalAnswer: mapped.finalAnswer ?? state.task.finalAnswer,
@@ -116,7 +131,12 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
 
   completeTask: () => set((state) => {
     const completed = state.task
-      ? { ...state.task, status: 'completed' as const, completedAt: new Date().toISOString() }
+      ? {
+          ...state.task,
+          status: 'completed' as const,
+          completedAt: new Date().toISOString(),
+          finalAnswer: state.task.finalAnswer ?? undefined,
+        }
       : null;
     return {
       task: completed,

@@ -69,7 +69,7 @@ export function mapBackendTask(raw: BackendTask) {
     status: raw.status,
     startUrl: raw.startUrl,
     error: raw.error,
-    finalAnswer: raw.finalAnswer,
+    finalAnswer: raw.finalAnswer ?? (raw as { final_answer?: string }).final_answer,
     currentScreenshot: raw.currentScreenshot ? toDataUrl(raw.currentScreenshot) : undefined,
     steps: (raw.steps || []).map((s) => ({
       stepNumber: s.stepNumber,

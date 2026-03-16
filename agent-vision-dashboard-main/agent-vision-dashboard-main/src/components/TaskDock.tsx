@@ -18,6 +18,7 @@ export function TaskDock() {
   const recognitionRef = useRef<any>(null);
   const cleanupSSERef = useRef<(() => void) | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const refetchedFinalAnswerForRef = useRef<string | null>(null);
 
   // ── Polling fallback ───────────────────────────────────────────────────────
   const stopPolling = useCallback(() => {
@@ -57,13 +58,41 @@ export function TaskDock() {
   const attachStream = useCallback((sessionId: string) => {
     cleanupSSERef.current = createSSEStream(
       sessionId,
-      (raw: BackendTask) => {
-        updateFromBackendTask(raw);
+      async (raw: BackendTask) => {
+        if (raw.error) {
+          cleanupSSERef.current?.();
+          cleanupSSERef.current = null;
+          startPolling(sessionId);
+          return;
+        }
+        const validStatuses = ['pending', 'running', 'completed', 'failed', 'cancelled'];
+        if (!raw.status || !validStatuses.includes(raw.status)) {
+          return;
+        }
         if (raw.status === 'completed') {
+          if (raw.finalAnswer) {
+            updateFromBackendTask(raw);
+          }
+          await new Promise((r) => setTimeout(r, 150));
+          try {
+            let latest = await pollStatus(sessionId);
+            updateFromBackendTask(latest);
+            const current = useAgentStore.getState().task;
+            if (current?.status === 'completed' && !current?.finalAnswer) {
+              await new Promise((r) => setTimeout(r, 200));
+              latest = await pollStatus(sessionId);
+              updateFromBackendTask(latest);
+            }
+          } catch {
+            updateFromBackendTask(raw);
+          }
           completeTask();
           cleanupSSERef.current?.();
           cleanupSSERef.current = null;
-        } else if (raw.status === 'failed') {
+        } else {
+          updateFromBackendTask(raw);
+        }
+        if (raw.status === 'failed') {
           failTask(raw.error || 'Task failed');
           cleanupSSERef.current?.();
           cleanupSSERef.current = null;
@@ -170,13 +199,40 @@ export function TaskDock() {
 
   // ── Clean up stream when task is cleared (e.g. New Task from header) ───────
   useEffect(() => {
-    if (task == null && cleanupSSERef.current) {
-      cleanupSSERef.current();
-      cleanupSSERef.current = null;
+    if (task == null) {
+      refetchedFinalAnswerForRef.current = null;
+      if (cleanupSSERef.current) {
+        cleanupSSERef.current();
+        cleanupSSERef.current = null;
+      }
       stopPolling();
       setContinueInstruction("");
     }
   }, [task, stopPolling]);
+
+  // ── Fallback: if task is completed but finalAnswer missing, refetch status twice (400ms and 900ms) ─
+  useEffect(() => {
+    const sessionId = task?.sessionId;
+    if (
+      !sessionId ||
+      task?.status !== "completed" ||
+      task?.finalAnswer ||
+      refetchedFinalAnswerForRef.current === sessionId
+    ) {
+      return;
+    }
+    refetchedFinalAnswerForRef.current = sessionId;
+    const t1 = setTimeout(() => {
+      pollStatus(sessionId).then(updateFromBackendTask).catch(() => {});
+    }, 400);
+    const t2 = setTimeout(() => {
+      pollStatus(sessionId).then(updateFromBackendTask).catch(() => {});
+    }, 900);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [task?.sessionId, task?.status, task?.finalAnswer, updateFromBackendTask]);
 
   // ── Voice ──────────────────────────────────────────────────────────────────
   const handleSpeak = useCallback(() => {
@@ -293,16 +349,22 @@ export function TaskDock() {
           </Button>
         </div>
 
-        {/* Final answer box — shown whenever the agent produced an answer */}
-        {task?.finalAnswer && (
+        {/* Final answer section — always visible when task has ended so user sees where the answer appears */}
+        {task?.sessionId && ["completed", "failed", "cancelled"].includes(task.status) && (
           <div className="rounded-md border border-primary/40 bg-primary/10 p-3 space-y-1.5">
             <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
               <Sparkles className="h-3.5 w-3.5 shrink-0" />
               Agent Answer
             </div>
-            <p className="text-xs text-foreground leading-relaxed whitespace-pre-wrap break-words">
-              {task.finalAnswer}
-            </p>
+            {task.finalAnswer ? (
+              <p className="text-xs text-foreground leading-relaxed whitespace-pre-wrap break-words">
+                {task.finalAnswer}
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground italic">
+                No answer was extracted for this task.
+              </p>
+            )}
           </div>
         )}
 

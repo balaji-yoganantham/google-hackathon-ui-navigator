@@ -210,7 +210,13 @@ def _route_after_execute(state: AgentState) -> Literal["execute_step", "plan", "
     if state.get("cancelled"):
         return "end"
     status = state.get("status")
-    if status in ("completed", "failed", "cancelled"):
+    if status in ("failed", "cancelled"):
+        return "end"
+    # Completed but no final_answer yet: run one more plan round to extract answer (e.g. price)
+    if status == "completed" and not state.get("final_answer"):
+        logger.info("[Orchestrator] Completed without final_answer — routing to plan for answer extraction")
+        return "plan"
+    if status == "completed":
         return "end"
     # Hard limits
     if len(state.get("steps") or []) >= MAX_STEPS:
@@ -313,6 +319,8 @@ async def run_task(
             return task
         if task.status in ("completed", "failed", "cancelled"):
             logger.info("[Orchestrator] Task %s finished: status=%s steps=%s", task_id, task.status, len(task.steps))
+            if task.finalAnswer:
+                _emit()
             return task
 
     task.updatedAt = datetime.utcnow()

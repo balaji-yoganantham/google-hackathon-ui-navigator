@@ -29,6 +29,10 @@ TASK COMPLETION RULES:
 - "Navigate to URL": Use a single "navigate" step ONLY when the user explicitly asks to open a specific URL (e.g. "open this exact URL"). Otherwise do NOT use navigate to jump to search results or filtered pages.
 - If the user asks to "search and tell me" or "find results", the plan must include submitting the search, not just typing.
 
+INFORMATION-SEEKING (answer extraction):
+- When the user asked for specific information (e.g. price, cost, "how much", "what is the price of X", "tell me the price", "find the cost") and the CURRENT screenshot clearly shows that information on the page, do NOT plan any further actions. Return "decisions": [], taskComplete: true, and set "summary" to a direct, concise answer (e.g. "The Nothing Phone (3) is priced at $299." or "The price shown is $299.").
+- This applies when the goal was to find and report information and the current page already contains it — no further clicks are needed. The summary is shown to the user as the final answer.
+
 MULTI-PHASE TASK RULES (important for tasks like "search and then play/click/open"):
 - You only see the CURRENT page in the screenshot. Plan only the actions visible on this page.
 - If the task requires actions on a FUTURE page (e.g. click search result, click play on video), do NOT try to plan those now. Set taskComplete=false and the system will re-plan after the current actions run.

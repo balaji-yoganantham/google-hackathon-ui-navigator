@@ -187,7 +187,7 @@ export function LogsPanel() {
   const showSkeleton = isLoading && steps.length === 0;
 
   return (
-    <div className="w-80 border-l border-border flex flex-col shrink-0 bg-card/50">
+    <div className="w-full min-w-0 flex flex-col flex-1 min-h-0 bg-card/50">
       {/* Tab switcher */}
       <div className="flex border-b border-border shrink-0">
         {(['current', 'history'] as const).map((tab) => (

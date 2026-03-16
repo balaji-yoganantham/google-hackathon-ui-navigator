@@ -1,6 +1,7 @@
 """Agent API: execute, status, stream SSE, continue, cancel, history."""
 import asyncio
 import json
+import logging
 import time
 import uuid
 from datetime import datetime
@@ -18,13 +19,16 @@ from utils.session_manager import session_manager
 from utils.task_queue import TaskQueue
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+logger = logging.getLogger(__name__)
 
 # Cancelled session IDs (cleared when task ends)
 _cancelled_sessions: set[str] = set()
 
 
 def _make_task_dict(task: TaskExecution) -> dict:
-    return task.model_dump(mode="json")
+    d = task.model_dump(mode="json")
+    d.setdefault("finalAnswer", getattr(task, "finalAnswer", None))
+    return d
 
 
 async def _queue_processor(session_id: str, payload: Any) -> None:
@@ -215,6 +219,8 @@ async def get_task_status(session_id: str) -> dict:
     task = session_manager.get_session(session_id)
     if not task:
         raise HTTPException(404, "Session not found")
+    if task.finalAnswer:
+        logger.info("Status response includes finalAnswer for %s", session_id)
     return _make_task_dict(task)
 
 
@@ -234,6 +240,7 @@ async def stream_task(session_id: str, request: Request) -> StreamingResponse:
     async def event_stream():
         last_steps = -1
         last_status = ""
+        last_final_answer: Optional[str] = None
         last_heartbeat = time.monotonic()
         heartbeat_interval = 15.0  # send keepalive so proxies don't close the stream
         while True:
@@ -244,9 +251,15 @@ async def stream_task(session_id: str, request: Request) -> StreamingResponse:
                 yield f"data: {json.dumps({'error': 'Session not found'})}\n\n"
                 break
             steps_len = len(task.steps)
-            if steps_len != last_steps or task.status != last_status:
+            final_answer = (task.finalAnswer or "").strip()
+            if (
+                steps_len != last_steps
+                or task.status != last_status
+                or final_answer != (last_final_answer or "")
+            ):
                 last_steps = steps_len
                 last_status = task.status
+                last_final_answer = final_answer if final_answer else last_final_answer
                 yield f"data: {json.dumps(_make_task_dict(task))}\n\n"
             if task.status in ("completed", "failed", "cancelled"):
                 break

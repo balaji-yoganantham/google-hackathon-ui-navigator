@@ -22,4 +22,5 @@ if __name__ == "__main__":
         port=settings.BACKEND_PORT,
         reload=False,   # reload forks a new process — use False here
         log_level="info",
+        workers=1,     # session state is in-memory per process; must use 1 worker
     )

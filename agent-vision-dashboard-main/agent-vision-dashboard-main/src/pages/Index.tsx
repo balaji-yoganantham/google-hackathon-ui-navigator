@@ -9,13 +9,19 @@ const Index = () => {
     <div className="h-screen flex flex-col overflow-hidden">
       <DashboardHeader />
       <div className="flex flex-1 min-h-0">
-        {/* Left + Center */}
+        {/* Left: browser view only */}
         <div className="flex-1 flex flex-col min-w-0">
           <AgentVision />
-          <TaskDock />
         </div>
-        {/* Right panel */}
-        <LogsPanel />
+        {/* Right panel: task description, controls, answer, then steps/history */}
+        <div className="w-80 shrink-0 flex flex-col border-l border-border bg-card/50 min-h-0 overflow-hidden">
+          <div className="shrink-0 overflow-y-auto">
+            <TaskDock />
+          </div>
+          <div className="flex-1 min-h-0 flex flex-col border-t border-border">
+            <LogsPanel />
+          </div>
+        </div>
       </div>
       <StatusBanner />
     </div>
