@@ -248,7 +248,7 @@ async def _node_extract(state: AgentState) -> dict:
                 content_type = "qa"
     reports: list[ContentReport] = []
     if content.strip():
-        await asyncio.sleep(2)  # Throttle before Gemini to reduce 429 rate limits
+        await asyncio.sleep(8)  # Throttle before Gemini — planning calls exhaust quota; 8s lets it recover
         reports = await gemini.extract_and_analyze(content, content_type, task_description, page_url)
     else:
         reports = [ContentReport(title="No content", url=page_url, content_type=content_type, content="No text could be extracted.")]

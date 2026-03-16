@@ -127,11 +127,11 @@ class GeminiClient:
                     project=settings.GOOGLE_CLOUD_PROJECT,
                     location=settings.GOOGLE_CLOUD_LOCATION,
                     temperature=0,
-                    max_output_tokens=3000,
+                    max_output_tokens=8192,
                     max_retries=0,
                 )
             logger.info(
-                "GeminiClient initialized (Vertex AI) model=%s project=%s max_output_tokens=3000",
+                "GeminiClient initialized (Vertex AI) model=%s project=%s max_output_tokens=8192",
                 self._model, settings.GOOGLE_CLOUD_PROJECT,
             )
         else:
@@ -564,7 +564,9 @@ class GeminiClient:
                 )
                 last_error = ValueError("Model returned empty response.")
                 if attempt < max_retries:
-                    wait = _backoff_seconds(attempt, max_retries, False)
+                    # Treat empty response as soft rate-limit — use long backoff (10s/30s/60s)
+                    wait = _backoff_seconds(attempt, max_retries, True)
+                    logger.info("[extract_and_analyze] Empty response likely from quota exhaustion, backing off %ds...", wait)
                     await _asyncio.sleep(wait)
                 continue
             stripped = text.strip()
