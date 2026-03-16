@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { mapBackendTask, type BackendTask } from '@/lib/api';
+import { mapBackendTask, type BackendTask, type ContentReport } from '@/lib/api';
 
 // Matches all action types the backend can produce
 export type ActionType =
@@ -25,6 +25,7 @@ export interface AgentTask {
   currentScreenshot?: string;
   error?: string;
   finalAnswer?: string;
+  reports?: ContentReport[];
   startedAt?: string;
   completedAt?: string;
 }
@@ -34,18 +35,21 @@ interface AgentStore {
   isLoading: boolean;
   isRecording: boolean;
   taskDescription: string;
-  activeTab: 'current' | 'history';
+  activeTab: 'logs' | 'steps' | 'history' | 'report';
   history: AgentTask[];
   /** Screenshot of the step the user clicked — shown in the main viewport. */
   selectedStepScreenshot: string | null;
   /** Session ID being continued from history (null = fresh execute mode). */
   continuingSessionId: string | null;
+  /** When true, TaskDock/run logic should trigger send (e.g. from Planner Start Task). */
+  triggerSend: boolean;
 
   setTaskDescription: (desc: string) => void;
+  setTriggerSend: (v: boolean) => void;
   setIsLoading: (loading: boolean) => void;
   setIsRecording: (recording: boolean) => void;
   setTask: (task: AgentTask | null) => void;
-  setActiveTab: (tab: 'current' | 'history') => void;
+  setActiveTab: (tab: 'logs' | 'steps' | 'history' | 'report') => void;
   setSelectedStepScreenshot: (url: string | null) => void;
   /** Enter continue-mode for a past task: pre-fills session ID. */
   startContinue: (task: AgentTask) => void;
@@ -69,12 +73,14 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   isLoading: false,
   isRecording: false,
   taskDescription: '',
-  activeTab: 'current',
+  activeTab: 'logs',
   history: [],
   selectedStepScreenshot: null,
   continuingSessionId: null,
+  triggerSend: false,
 
   setTaskDescription: (desc) => set({ taskDescription: desc }),
+  setTriggerSend: (v) => set({ triggerSend: v }),
   setIsLoading: (loading) => set({ isLoading: loading }),
   setIsRecording: (recording) => set({ isRecording: recording }),
   setTask: (task) => set({ task }),
@@ -84,7 +90,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   startContinue: (task) => set({
     continuingSessionId: task.sessionId,
     taskDescription: '',
-    activeTab: 'current',
+    activeTab: 'logs',
   }),
 
   clearContinue: () => set({ continuingSessionId: null, taskDescription: '' }),
@@ -110,6 +116,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         finalAnswer: mapped.finalAnswer ?? state.task.finalAnswer,
         taskDescription: mapped.taskDescription || state.task.taskDescription,
         startUrl: mapped.startUrl ?? state.task.startUrl,
+        reports: (mapped as { reports?: ContentReport[] }).reports ?? state.task.reports,
       },
     };
   }),
@@ -155,6 +162,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       taskDescription: '',
       continuingSessionId: null,
       selectedStepScreenshot: null,
+      triggerSend: false,
       history: nextHistory,
     };
   }),

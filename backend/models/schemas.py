@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 # --- Browser action types ---
 ActionType = Literal[
-    "click", "type", "scroll", "navigate", "wait", "screenshot", "hover", "press"
+    "click", "type", "scroll", "navigate", "wait", "screenshot", "hover", "press", "extract"
 ]
 
 
@@ -48,6 +48,23 @@ class ExecutionStep(BaseModel):
 TaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 
 
+class ContentReport(BaseModel):
+    """Structured report from PDF/YouTube/page extraction + Vertex AI analysis."""
+    title: str = ""
+    url: str = ""
+    date: Optional[str] = None
+    content_type: str = "page"  # "pdf" | "youtube" | "page"
+    content: str = ""
+    court: Optional[str] = None
+    docket: Optional[str] = None
+
+
+class ExtractionResult(BaseModel):
+    """Result of content extraction for a session."""
+    reports: list[ContentReport] = Field(default_factory=list)
+    session_id: str = ""
+
+
 class TaskExecution(BaseModel):
     id: str
     taskDescription: str
@@ -58,6 +75,7 @@ class TaskExecution(BaseModel):
     finalAnswer: Optional[str] = None  # agent's final answer/summary when task completes
     suggestions: Optional[list[Suggestion]] = None
     startUrl: Optional[str] = None
+    reports: list[ContentReport] = Field(default_factory=list)  # extraction reports
     createdAt: datetime = Field(default_factory=datetime.utcnow)
     updatedAt: datetime = Field(default_factory=datetime.utcnow)
 

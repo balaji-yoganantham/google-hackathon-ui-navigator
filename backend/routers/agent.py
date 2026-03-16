@@ -1,4 +1,4 @@
-"""Agent API: execute, status, stream SSE, continue, cancel, history."""
+"""Agent API: execute, status, stream SSE, WebSocket live feed, continue, cancel, history."""
 import asyncio
 import json
 import time
@@ -6,15 +6,16 @@ import uuid
 from datetime import datetime
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.requests import Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from agents.orchestrator import run_task
-from models.schemas import TaskExecution
+from models.schemas import ExtractionResult, TaskExecution
 from utils.browser_pool import browser_pool
 from utils.session_manager import session_manager
+from utils.stream_manager import browser_stream_manager
 from utils.task_queue import TaskQueue
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
@@ -234,6 +235,7 @@ async def stream_task(session_id: str, request: Request) -> StreamingResponse:
     async def event_stream():
         last_steps = -1
         last_status = ""
+        last_reports_len = -1
         last_heartbeat = time.monotonic()
         heartbeat_interval = 15.0  # send keepalive so proxies don't close the stream
         while True:
@@ -244,9 +246,11 @@ async def stream_task(session_id: str, request: Request) -> StreamingResponse:
                 yield f"data: {json.dumps({'error': 'Session not found'})}\n\n"
                 break
             steps_len = len(task.steps)
-            if steps_len != last_steps or task.status != last_status:
+            reports_len = len(task.reports) if task.reports else 0
+            if steps_len != last_steps or task.status != last_status or reports_len != last_reports_len:
                 last_steps = steps_len
                 last_status = task.status
+                last_reports_len = reports_len
                 yield f"data: {json.dumps(_make_task_dict(task))}\n\n"
             if task.status in ("completed", "failed", "cancelled"):
                 break
@@ -271,6 +275,28 @@ async def stream_task(session_id: str, request: Request) -> StreamingResponse:
         media_type="text/event-stream",
         headers=cors_headers,
     )
+
+
+@router.websocket("/ws/{session_id}")
+async def browser_stream_ws(websocket: WebSocket, session_id: str) -> None:
+    """
+    WebSocket live browser feed.
+
+    Clients connect here to receive real-time JPEG frames as the agent acts.
+    Each message is JSON: {"type": "screenshot", "screenshot": "<base64>", "step": N}
+    Send any message to keep the connection alive; send "stop" to close it.
+    """
+    await websocket.accept()
+    browser_stream_manager.connect(session_id, websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data.strip().lower() == "stop":
+                break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        browser_stream_manager.disconnect(session_id)
 
 
 @router.post("/continue/{session_id}")
@@ -363,3 +389,75 @@ async def get_task_detail(task_id: str) -> dict:
 async def delete_task_history(task_id: str) -> dict:
     session_manager.delete_session(task_id)
     return {"message": "Deleted"}
+
+
+@router.get("/report/{session_id}", response_model=ExtractionResult)
+async def get_report(session_id: str) -> ExtractionResult:
+    """Return extraction reports for a session (from completed extract step)."""
+    task = session_manager.get_session(session_id)
+    if not task:
+        raise HTTPException(404, "Session not found")
+    return ExtractionResult(reports=task.reports, session_id=session_id)
+
+
+def _report_type_subtitle(reports: list) -> str:
+    """Return report type label from content_type and count (e.g. Legal Research Report, Video Analysis Report)."""
+    if not reports:
+        return "Extraction Report"
+    ct = (reports[0].content_type or "page").lower()
+    n = len(reports)
+    if ct == "pdf":
+        return "Legal Research Report" if n <= 1 else f"Precedent Research Report — {n} Cases"
+    if ct == "youtube":
+        return "Video Analysis Report"
+    return "Legal Research Report" if n <= 1 else f"Extracted Cases ({n})"
+
+
+@router.post("/export/{session_id}")
+async def export_docx(session_id: str) -> Response:
+    """Generate and return a .docx file from the session's extraction reports (title block, Research Query, court/date/docket)."""
+    task = session_manager.get_session(session_id)
+    if not task:
+        raise HTTPException(404, "Session not found")
+    if not task.reports:
+        raise HTTPException(404, "No reports to export")
+    import io
+    from datetime import datetime as dt
+    from docx import Document
+    from docx.shared import Pt
+
+    doc = Document()
+    doc.add_heading("UI Navigator", 0)
+    doc.add_paragraph(_report_type_subtitle(task.reports))
+    doc.add_paragraph(f"Generated {dt.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
+    doc.add_paragraph()
+    if getattr(task, "taskDescription", None) and (task.taskDescription or "").strip():
+        doc.add_heading("Research Query", level=1)
+        doc.add_paragraph((task.taskDescription or "").strip())
+        doc.add_paragraph()
+    for i, r in enumerate(task.reports, 1):
+        doc.add_heading(r.title or f"Report {i}", level=1)
+        meta_parts = []
+        if r.court:
+            meta_parts.append(f"Court: {r.court}")
+        if r.date:
+            meta_parts.append(f"Date: {r.date}")
+        if r.docket:
+            meta_parts.append(f"Docket: {r.docket}")
+        if meta_parts:
+            doc.add_paragraph(" | ".join(meta_parts))
+        if r.url and not any(r.url in p for p in meta_parts):
+            doc.add_paragraph(f"URL: {r.url}")
+        for block in (r.content or "").split("\n"):
+            block = block.strip()
+            if block:
+                doc.add_paragraph(block)
+        doc.add_paragraph()
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return Response(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="report-{session_id}.docx"'},
+    )

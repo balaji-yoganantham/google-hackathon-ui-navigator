@@ -13,6 +13,12 @@ export default defineConfig(({ mode }) => ({
     },
     // Proxy /api and /health to the Python backend — avoids CORS in dev
     proxy: {
+      // WebSocket live browser stream — must be listed before the generic /api rule
+      '/api/agent/ws': {
+        target: 'ws://localhost:8000',
+        changeOrigin: true,
+        ws: true,
+      },
       '/api': {
         target: 'http://localhost:8000',
         changeOrigin: true,

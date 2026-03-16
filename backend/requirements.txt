@@ -14,6 +14,11 @@ langgraph>=0.0.20
 # Browser automation
 playwright>=1.41.0
 
+# PDF / YouTube extraction and report export
+pdfplumber>=0.10.0
+youtube-transcript-api>=0.6.0
+python-docx>=1.0.0
+
 # Optional: voice (uncomment if using Google Cloud STT/TTS)
 # google-cloud-speech>=2.24.0
 # google-cloud-texttospeech>=2.14.0
