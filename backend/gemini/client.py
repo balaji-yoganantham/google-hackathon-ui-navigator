@@ -14,6 +14,27 @@ from models.schemas import ContentReport, GeminiResponse
 
 logger = logging.getLogger(__name__)
 
+# Backoff for rate limit (429 / resource exhausted): 10s, 30s, 60s
+_RATE_LIMIT_BACKOFF = (10, 30, 60)
+
+
+def _is_rate_limit_error(e: Exception) -> bool:
+    """True if the exception indicates API rate limit (429) or resource exhausted."""
+    msg = (str(e) or "").lower()
+    return any(
+        x in msg
+        for x in ("429", "resource exhausted", "quota", "rate limit", "resource_exhausted")
+    )
+
+
+def _backoff_seconds(attempt: int, max_retries: int, is_rate_limit: bool) -> int:
+    """Return wait time in seconds before retry."""
+    if is_rate_limit:
+        idx = min(attempt - 1, len(_RATE_LIMIT_BACKOFF) - 1)
+        return _RATE_LIMIT_BACKOFF[idx]
+    return 2**attempt
+
+
 SYSTEM_PROMPT = """You are Visual Agent, an intelligent web automation agent with exceptional visual understanding capabilities.
 
 Your role:
@@ -57,6 +78,9 @@ ACTION TYPES:
 - "hover": Hover over element
 - "press": Press keyboard key (Enter, Space, Escape, etc)
 - "extract": Extract and analyze content on the current page (PDF, YouTube transcript, or page text). Use when the user asks to summarize, extract, or report on the visible content. No selector needed.
+
+EXTRACT FOR REPORT/RESEARCH TASKS:
+- If the task contains "report", "analyze", "summarize", "research", or "tell me about", you MUST include an "extract" action as the FINAL decision when you have reached the target content page (e.g. after opening a Wikipedia article, a search result, or the page the user asked about). Do NOT set taskComplete=true without an extract step when the user asked for a report or analysis.
 
 JSON RESPONSE FORMAT:
 {
@@ -103,10 +127,11 @@ class GeminiClient:
                     project=settings.GOOGLE_CLOUD_PROJECT,
                     location=settings.GOOGLE_CLOUD_LOCATION,
                     temperature=0,
-                    max_output_tokens=3000,
+                    max_output_tokens=8192,
+                    max_retries=0,
                 )
             logger.info(
-                "GeminiClient initialized (Vertex AI) model=%s project=%s max_output_tokens=3000",
+                "GeminiClient initialized (Vertex AI) model=%s project=%s max_output_tokens=8192",
                 self._model, settings.GOOGLE_CLOUD_PROJECT,
             )
         else:
@@ -185,7 +210,21 @@ class GeminiClient:
             messages = _build_messages(use_prompt)
 
             logger.debug("[plan_task] attempt %d/%d — invoking model", attempt, max_retries)
-            response = await self._llm.ainvoke(messages)
+            try:
+                response = await self._llm.ainvoke(messages)
+            except Exception as e:
+                last_error = e
+                is_429 = _is_rate_limit_error(e)
+                wait = _backoff_seconds(attempt, max_retries, is_429)
+                logger.warning(
+                    "[plan_task] attempt %d/%d — invoke failed: %s",
+                    attempt, max_retries, e,
+                )
+                if is_429:
+                    logger.info("[plan_task] Rate limit detected, backing off %ds before retry...", wait)
+                if attempt < max_retries:
+                    await _asyncio.sleep(wait)
+                continue
             raw = getattr(response, "content", None) or ""
             if isinstance(raw, list):
                 raw = "".join(
@@ -201,7 +240,7 @@ class GeminiClient:
                 )
                 last_error = ValueError("Model returned an empty response.")
                 if attempt < max_retries:
-                    wait = 2 ** attempt
+                    wait = _backoff_seconds(attempt, max_retries, False)
                     logger.info("[plan_task] waiting %ds before retry...", wait)
                     await _asyncio.sleep(wait)
                 continue
@@ -229,7 +268,7 @@ class GeminiClient:
                 )
                 last_error = parse_err
                 if attempt < max_retries:
-                    wait = 2 ** attempt
+                    wait = _backoff_seconds(attempt, max_retries, False)
                     logger.info("[plan_task] waiting %ds before retry with simplified prompt...", wait)
                     await _asyncio.sleep(wait)
 
@@ -397,20 +436,19 @@ class GeminiClient:
         '[{{"title": "...", "court": "Channel: ...", "date": "... or null", "docket": "", "content": "Your extensive 6-section analysis here"}}].'
     )
     _PROMPT_PAGE = (
-        "You are a Senior Legal Analyst preparing a premium intelligence report. The user's goal is: \"{goal}\". "
+        "You are a Research Analyst preparing a premium intelligence report. The user's goal is: \"{goal}\". "
         "Read this webpage text and write an EXTENSIVE, detailed analysis of AT LEAST 800 words. "
         "Structure your analysis into these sections:\n"
-        "1. CASE BACKGROUND & PARTIES: Identify all parties and the nature of the dispute (or for non-legal pages: overview and key figures)\n"
-        "2. PROCEDURAL HISTORY: How the case progressed (or: key events and timeline)\n"
-        "3. KEY LEGAL ISSUES: The central legal questions (or: main topics and arguments)\n"
-        "4. ANALYSIS & REASONING: How the court or parties addressed each issue (or: detailed analysis)\n"
-        "5. IMPORTANT PRECEDENTS: Any cited cases or authorities (or: sources and references)\n"
-        "6. HOLDING & VERDICT: The final decision (or: conclusions)\n"
-        "7. PRACTICAL IMPLICATIONS: What this means going forward\n\n"
+        "1. OVERVIEW: What is this page about? Who or what is the main subject? Provide context.\n"
+        "2. KEY FACTS: The most important facts, dates, figures, and definitions.\n"
+        "3. SIGNIFICANT DETAILS: Notable events, achievements, contributions, or developments.\n"
+        "4. SUPPORTING CONTEXT: Background, sources, related topics, or how this fits into the bigger picture.\n"
+        "5. CRITICAL ANALYSIS: Strengths, gaps, controversies, or different perspectives where relevant.\n"
+        "6. SUMMARY: Concise conclusions and main takeaways.\n\n"
         "Write each section as a thorough paragraph. Ignore UI menus, navigation links, and ads. "
         "The content field must be YOUR written analysis/summary only — do NOT copy or paste raw webpage text. "
         "Return ONLY a valid JSON array with no markdown: "
-        '[{{"title": "Case Name", "court": "Court", "date": "Date", "docket": "Docket Number", "content": "Your extensive 7-section analysis here"}}]. '
+        '[{{"title": "Page or topic title", "court": "Source or site name", "date": "Date if relevant or null", "docket": "", "content": "Your extensive 6-section analysis here"}}]. '
         "For list requests, return multiple objects."
     )
     _PROMPT_PAGE_SIMPLE = (
@@ -421,85 +459,192 @@ class GeminiClient:
         '{{"title": "Short title for the result", "content": "Your 1-3 sentence answer here."}}'
     )
 
+    _PROMPT_EXTRACT_SIMPLE = (
+        "The user's goal is: \"{goal}\". "
+        "Analyze the content below and return a JSON array of report objects. "
+        "Each object must have \"title\" and \"content\". Content should be your analysis (at least a few paragraphs). "
+        "Return ONLY a valid JSON array, no markdown. Example: [{{\"title\": \"...\", \"content\": \"...\"}}]."
+    )
+
+    _PROMPT_QA = (
+        "You are a QA analyst. The user ran a QA scan on a webpage. "
+        "Given the page text below (and page URL if relevant), list every issue you can infer. "
+        "Check for: missing or empty image alt text, poor color contrast, broken or suspicious links (e.g. empty href, javascript:), "
+        "form elements without labels, buttons/links with unclear purpose, layout or accessibility problems. "
+        "For each issue provide: a short title, severity (critical / major / minor), a brief description, and a recommendation. "
+        "Return ONLY a valid JSON array of objects, no markdown. Each object must have \"title\" and \"content\". "
+        "Put description, severity, and recommendation in the \"content\" field (e.g. \"Severity: major. Description: ... Recommendation: ...\"). "
+        "Example: [{{\"title\": \"Missing alt text on hero image\", \"content\": \"Severity: major. Description: The main image has no alt attribute. Recommendation: Add descriptive alt text.\"}}]. "
+        "If no issues are found, return one object: {{\"title\": \"No issues found\", \"content\": \"No accessibility, link, or layout issues were detected from the provided content.\"}}."
+    )
+
+    _PROMPT_QA_SIMPLE = (
+        "The user ran a QA scan on a webpage. Return a JSON array of objects. "
+        "Each object must have \"title\" and \"content\" (issue title and description, or severity and recommendation). "
+        "If no issues found, return one object: {{\"title\": \"No issues found\", \"content\": \"No issues detected.\"}}. "
+        "Return ONLY a valid JSON array, no markdown."
+    )
+
     async def extract_and_analyze(
         self, content: str, content_type: str, goal: str, page_url: str = ""
     ) -> list[ContentReport]:
         """Send extracted text/transcript to Vertex AI; return structured report list (content-type-specific prompts)."""
+        import asyncio as _asyncio
+
         if not content or not content.strip():
             return [ContentReport(title="No content", url=page_url, content_type=content_type, content="No text extracted.")]
         ct = (content_type or "page").lower()
         if ct == "pdf":
-            prompt_template = self._PROMPT_PDF
+            full_prompt_template = self._PROMPT_PDF
         elif ct == "youtube":
-            prompt_template = self._PROMPT_YOUTUBE
+            full_prompt_template = self._PROMPT_YOUTUBE
+        elif ct == "qa":
+            full_prompt_template = self._PROMPT_QA
         else:
-            # Use short-answer prompt for simple lookups (price, find, search and tell, etc.)
             goal_lower = (goal or "").lower()
-            simple_keywords = ("price", "cost", "how much", "find the", "search and tell", "what is the", "tell me the", "get the")
-            is_simple_lookup = len(goal_lower) < 80 and any(kw in goal_lower for kw in simple_keywords)
-            prompt_template = self._PROMPT_PAGE_SIMPLE if is_simple_lookup else self._PROMPT_PAGE
-        prompt = prompt_template.format(goal=goal) + "\n\n---\n" + content[:120000]
-        messages = [HumanMessage(content=prompt)]
-        response = await self._llm.ainvoke(messages)
-        raw = getattr(response, "content", None) or ""
-        if isinstance(raw, list):
-            raw = "".join(
-                block.get("text", "") if isinstance(block, dict) else str(block)
-                for block in raw
-            )
-        text = (raw or "").strip()
+            qa_keywords = ("qa scan", "qa scan on", "quality assurance", "run a qa")
+            is_qa_scan = any(kw in goal_lower for kw in qa_keywords)
+            if is_qa_scan:
+                full_prompt_template = self._PROMPT_QA
+                ct = "qa"
+            else:
+                simple_keywords = ("price", "cost", "how much", "find the", "search and tell", "what is the", "tell me the", "get the")
+                is_simple_lookup = len(goal_lower) < 80 and any(kw in goal_lower for kw in simple_keywords)
+                full_prompt_template = self._PROMPT_PAGE_SIMPLE if is_simple_lookup else self._PROMPT_PAGE
+        # QA: smaller slice on first attempt so model has room to return full JSON
+        if ct == "qa":
+            logger.info("[extract_and_analyze] Using QA path (content_type=qa)")
+        content_slice = content[:50000] if ct == "qa" else content[:120000]
         _fallback_msg = "Analysis could not be generated. Please try again or rephrase your query."
-        if not text:
-            logger.warning("[extract_and_analyze] Model returned empty response for content_type=%s", content_type)
-            return [ContentReport(title="Analysis", url=page_url, content_type=content_type, content=_fallback_msg)]
-        # Strip markdown code fences (Citadelle-style robust parsing)
-        stripped = text.strip()
-        if stripped.startswith("```"):
-            stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
-            stripped = re.sub(r"\s*```\s*$", "", stripped).strip()
-        parsed: list = []
-        attempts = [stripped, text.strip()]
-        for s in attempts:
+        _qa_no_issues = ContentReport(
+            title="No issues found",
+            url=page_url,
+            content_type="qa",
+            content="No accessibility, link, or layout issues were detected from the provided content.",
+        )
+        _qa_summary_title = "QA Scan Summary"
+        _qa_summary_content = (
+            "This QA scan completed. The automated analysis did not return structured findings. "
+            "Review the Steps tab for the actions performed during the scan. You may re-run the scan or try a different page."
+        )
+        max_retries = 3
+        last_error: Exception | None = None
+
+        for attempt in range(1, max_retries + 1):
+            use_simple = attempt > 1
+            if ct == "qa" and use_simple:
+                prompt_template = self._PROMPT_QA_SIMPLE
+            else:
+                prompt_template = self._PROMPT_EXTRACT_SIMPLE if use_simple else full_prompt_template
+            prompt = prompt_template.format(goal=goal) + "\n\n---\n" + (content_slice[:60000] if use_simple else content_slice)
+            messages = [HumanMessage(content=prompt)]
             try:
-                if s.startswith("["):
-                    start, end = s.find("["), s.rfind("]")
-                    if start != -1 and end > start:
-                        parsed = json.loads(s[start : end + 1])
+                response = await self._llm.ainvoke(messages)
+            except Exception as e:
+                last_error = e
+                is_429 = _is_rate_limit_error(e)
+                wait = _backoff_seconds(attempt, max_retries, is_429)
+                logger.warning("[extract_and_analyze] attempt %d/%d — invoke failed: %s", attempt, max_retries, e)
+                if is_429:
+                    logger.info("[extract_and_analyze] Rate limit detected, backing off %ds before retry...", wait)
+                if attempt < max_retries:
+                    await _asyncio.sleep(wait)
+                continue
+            raw = getattr(response, "content", None) or ""
+            if isinstance(raw, list):
+                raw = "".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in raw
+                )
+            text = (raw or "").strip()
+            if not text:
+                logger.warning(
+                    "[extract_and_analyze] attempt %d/%d — empty response (content_type=%s)",
+                    attempt, max_retries, ct,
+                )
+                last_error = ValueError("Model returned empty response.")
+                if attempt < max_retries:
+                    # Treat empty response as soft rate-limit — use long backoff (10s/30s/60s)
+                    wait = _backoff_seconds(attempt, max_retries, True)
+                    logger.info("[extract_and_analyze] Empty response likely from quota exhaustion, backing off %ds...", wait)
+                    await _asyncio.sleep(wait)
+                continue
+            stripped = text.strip()
+            if stripped.startswith("```"):
+                stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+                stripped = re.sub(r"\s*```\s*$", "", stripped).strip()
+            parsed: list = []
+            for s in [stripped, text.strip()]:
+                try:
+                    if s.startswith("["):
+                        start, end = s.find("["), s.rfind("]")
+                        if start != -1 and end > start:
+                            parsed = json.loads(s[start : end + 1])
+                            if isinstance(parsed, list) and parsed:
+                                break
+                    arr_match = re.search(r"\[[\s\S]*\]", s)
+                    if arr_match:
+                        parsed = json.loads(arr_match.group(0))
                         if isinstance(parsed, list) and parsed:
                             break
-                arr_match = re.search(r"\[[\s\S]*\]", s)
-                if arr_match:
-                    parsed = json.loads(arr_match.group(0))
-                    if isinstance(parsed, list) and parsed:
-                        break
-            except (json.JSONDecodeError, ValueError):
-                continue
-        if not parsed or not isinstance(parsed, list):
-            try:
-                single = self._parse_json_response(stripped)
-                if single and isinstance(single, dict) and (single.get("title") or single.get("content")):
-                    parsed = [single]
-            except Exception:
-                pass
-        if not isinstance(parsed, list):
-            parsed = []
-        reports = []
-        for item in parsed:
-            if isinstance(item, dict):
-                content = item.get("content") or item.get("summary") or item.get("analysis") or ""
-                reports.append(ContentReport(
-                    title=item.get("title") or "Report",
-                    url=item.get("url") or page_url,
-                    date=item.get("date"),
-                    content_type=item.get("content_type") or content_type,
-                    content=content,
-                    court=item.get("court"),
-                    docket=item.get("docket"),
-                ))
-        if not reports:
-            logger.warning("[extract_and_analyze] No valid report objects in model response")
-            return [ContentReport(title="Analysis", url=page_url, content_type=content_type, content=_fallback_msg)]
-        return reports
+                except (json.JSONDecodeError, ValueError):
+                    continue
+            if not parsed or not isinstance(parsed, list):
+                try:
+                    single = self._parse_json_response(stripped)
+                    if single and isinstance(single, dict) and (single.get("title") or single.get("content")):
+                        parsed = [single]
+                except Exception:
+                    pass
+            # QA: try extracting single JSON object from first { to last }
+            if (not parsed or not isinstance(parsed, list)) and ct == "qa":
+                try:
+                    start = stripped.find("{")
+                    end = stripped.rfind("}")
+                    if start != -1 and end != -1 and end > start:
+                        single = json.loads(stripped[start : end + 1])
+                        if isinstance(single, dict) and (single.get("title") or single.get("content")):
+                            parsed = [single]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            if not isinstance(parsed, list):
+                parsed = []
+            reports = []
+            for item in parsed:
+                if isinstance(item, dict):
+                    report_content = item.get("content") or item.get("summary") or item.get("analysis") or ""
+                    reports.append(ContentReport(
+                        title=item.get("title") or "Report",
+                        url=item.get("url") or page_url,
+                        date=item.get("date"),
+                        content_type="qa" if ct == "qa" else (item.get("content_type") or content_type),
+                        content=report_content,
+                        court=item.get("court"),
+                        docket=item.get("docket"),
+                    ))
+            # QA: empty parsed list or model said "no issues" in prose -> return No issues found
+            if ct == "qa" and isinstance(parsed, list) and len(parsed) == 0:
+                return [_qa_no_issues]
+            if ct == "qa" and not reports and text and ("no issues" in text.lower() or "no problems" in text.lower()):
+                return [_qa_no_issues]
+            if reports:
+                if attempt > 1:
+                    logger.info("[extract_and_analyze] SUCCESS on attempt %d/%d", attempt, max_retries)
+                return reports
+            last_error = ValueError("No valid report objects in model response")
+            if attempt < max_retries:
+                wait = _backoff_seconds(attempt, max_retries, False)
+                logger.info("[extract_and_analyze] retrying in %ds...", wait)
+                await _asyncio.sleep(wait)
+        logger.warning("[extract_and_analyze] FAILED after %d attempts", max_retries)
+        if ct == "qa":
+            return [ContentReport(
+                title=_qa_summary_title,
+                url=page_url,
+                content_type="qa",
+                content=_qa_summary_content,
+            )]
+        return [ContentReport(title="Analysis", url=page_url, content_type=content_type, content=_fallback_msg)]
 
     @staticmethod
     def _parse_json_response(raw: str) -> dict:

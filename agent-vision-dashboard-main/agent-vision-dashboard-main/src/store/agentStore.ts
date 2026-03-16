@@ -43,8 +43,12 @@ interface AgentStore {
   continuingSessionId: string | null;
   /** When true, TaskDock/run logic should trigger send (e.g. from Planner Start Task). */
   triggerSend: boolean;
+  /** URL to run a QA scan (set from QA Scan tab; TaskDock runs the task and clears). */
+  qaScanRequest: string | null;
 
   setTaskDescription: (desc: string) => void;
+  setQaScanRequest: (url: string | null) => void;
+  clearQaScanRequest: () => void;
   setTriggerSend: (v: boolean) => void;
   setIsLoading: (loading: boolean) => void;
   setIsRecording: (recording: boolean) => void;
@@ -78,9 +82,12 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   selectedStepScreenshot: null,
   continuingSessionId: null,
   triggerSend: false,
+  qaScanRequest: null,
 
   setTaskDescription: (desc) => set({ taskDescription: desc }),
   setTriggerSend: (v) => set({ triggerSend: v }),
+  setQaScanRequest: (url) => set({ qaScanRequest: url }),
+  clearQaScanRequest: () => set({ qaScanRequest: null }),
   setIsLoading: (loading) => set({ isLoading: loading }),
   setIsRecording: (recording) => set({ isRecording: recording }),
   setTask: (task) => set({ task }),
@@ -163,6 +170,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       continuingSessionId: null,
       selectedStepScreenshot: null,
       triggerSend: false,
+      qaScanRequest: null,
       history: nextHistory,
     };
   }),

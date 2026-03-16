@@ -235,8 +235,20 @@ async def _node_extract(state: AgentState) -> dict:
             content_type = "page"
     else:
         content = await browser.get_page_text()
+    # Force QA path when task is a QA scan so client always uses QA prompt and report shape
+    _task_lower = (task_description or "").lower()
+    if any(kw in _task_lower for kw in ("qa scan", "qa scan on", "quality assurance", "run a qa")):
+        content_type = "qa"
+    else:
+        # Fallback: plan may say "extract ... to analyze for QA" even if task_description was lost
+        plan = _get_plan(state)
+        if plan and plan.decisions and plan.decisions[0].action.type == "extract":
+            summary_lower = (plan.summary or "").lower()
+            if "qa" in summary_lower or "quality assurance" in summary_lower:
+                content_type = "qa"
     reports: list[ContentReport] = []
     if content.strip():
+        await asyncio.sleep(8)  # Throttle before Gemini — planning calls exhaust quota; 8s lets it recover
         reports = await gemini.extract_and_analyze(content, content_type, task_description, page_url)
     else:
         reports = [ContentReport(title="No content", url=page_url, content_type=content_type, content="No text could be extracted.")]
@@ -257,14 +269,20 @@ async def _node_extract(state: AgentState) -> dict:
     plan_dict = state.get("plan")
     decision_index = len(plan.decisions) if plan and plan.decisions else idx + 1
 
-    # Set final_answer so UI and TTS have a summary when task completes via extract
+    # Set final_answer so UI and TTS have a human-friendly summary (not raw report text)
     _fallback_msg = "Analysis could not be generated. Please try again or rephrase your query."
-    if reports and reports[0].content and reports[0].content.strip() != _fallback_msg:
-        first_content = reports[0].content.strip()
-        if len(first_content) > 300:
-            final_answer = first_content[:297].rsplit(" ", 1)[0] + "..."
-        else:
-            final_answer = first_content
+    _is_qa_task = content_type == "qa" or any(kw in _task_lower for kw in ("qa scan", "qa scan on", "quality assurance", "run a qa"))
+    first_title = (reports[0].title or "").strip() if reports else ""
+    if _is_qa_task and reports and (first_title == "No issues found" or first_title == "QA Scan Summary"):
+        final_answer = "QA scan complete. You can view the report in the Report tab."
+    elif reports and reports[0].content and reports[0].content.strip() != _fallback_msg:
+        report_title = reports[0].title or "the page"
+        n = len(reports)
+        final_answer = (
+            f"Analysis of {report_title} is complete. "
+            f"I have prepared a detailed report with {n} section(s). "
+            "You can view the full report in the Report tab."
+        )
     else:
         final_answer = f"Extraction complete. {len(reports)} report(s) generated."
 
@@ -276,6 +294,20 @@ async def _node_extract(state: AgentState) -> dict:
         "_do_extract": False,
         "decision_index": decision_index,
     }
+
+
+def _is_research_task(desc: str) -> bool:
+    """True if the task description suggests the user wants a report or analysis."""
+    if not desc or not desc.strip():
+        return False
+    d = desc.lower().strip()
+    keywords = (
+        "report", "analyze", "summarize", "research", "tell me about",
+        "explain", "information about", "details about", "give me a report",
+        "search about", "find out about",
+        "qa", "qa scan", "quality assurance",
+    )
+    return any(kw in d for kw in keywords)
 
 
 def _route_after_plan(state: AgentState) -> Literal["execute_step", "extract", "end"]:
@@ -296,7 +328,15 @@ def _route_after_execute(state: AgentState) -> Literal["execute_step", "plan", "
     if state.get("_do_extract"):
         return "extract"
     status = state.get("status")
-    if status in ("completed", "failed", "cancelled"):
+    if status in ("failed", "cancelled"):
+        return "end"
+    if status == "completed":
+        # Auto-trigger extract when user asked for a report but we completed without one
+        reports = state.get("reports") or []
+        task_desc = state.get("task_description") or ""
+        if not reports and _is_research_task(task_desc):
+            logger.info("[Orchestrator] Completed without reports but task is research-style → routing to EXTRACT")
+            return "extract"
         return "end"
     # Hard limits
     if len(state.get("steps") or []) >= MAX_STEPS:

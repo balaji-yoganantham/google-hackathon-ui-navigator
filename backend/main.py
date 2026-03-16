@@ -1,4 +1,4 @@
-"""UI Navigator Backend - FastAPI entry point."""
+"""Percept Backend - FastAPI entry point."""
 import asyncio
 import logging
 import sys
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: warm browser. Shutdown: close browser."""
-    logger.info("Starting UI Navigator backend")
+    logger.info("Starting Percept backend")
     try:
         await browser_pool.initialize()
         logger.info("Browser pre-warmed")
@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="UI Navigator API",
+    title="Percept API",
     description="AI web automation agent - Planner + Executor agents with Gemini 2.0 Flash",
     version="1.0.0",
     lifespan=lifespan,

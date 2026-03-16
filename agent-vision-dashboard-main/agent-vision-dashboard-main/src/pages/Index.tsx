@@ -7,12 +7,12 @@ import { LogsPanel } from "@/components/LogsPanel";
 import { StatusBanner } from "@/components/StatusBanner";
 import { FullReportView } from "@/components/FullReportView";
 import { PlannerCard } from "@/components/PlannerCard";
-import { ExecutionTimeline } from "@/components/ExecutionTimeline";
 import { HistoryView } from "@/components/HistoryView";
+import { QAScanView } from "@/components/QAScanView";
 import { useAgentStore } from "@/store/agentStore";
 
 const Index = () => {
-  const { task, setSelectedStepScreenshot } = useAgentStore();
+  const { task } = useAgentStore();
   const [activeMainTab, setActiveMainTab] = useState<MainTab>("executor");
   const [dismissedReportSessionId, setDismissedReportSessionId] = useState<string | null>(null);
   const hasReports = (task?.reports?.length ?? 0) > 0;
@@ -31,6 +31,8 @@ const Index = () => {
               />
             ) : activeMainTab === "planner" ? (
               <PlannerCard key="planner" onStartTask={() => setActiveMainTab("executor")} />
+            ) : activeMainTab === "qaScan" ? (
+              <QAScanView key="qaScan" onTaskStarted={() => setActiveMainTab("executor")} />
             ) : activeMainTab === "executor" ? (
               <div key="executor" className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
                 {(task?.status === "running" || task?.status === "pending") && task?.steps && (
@@ -50,20 +52,12 @@ const Index = () => {
                 <div className="flex-1 min-h-0 p-4 pb-0">
                   <AgentVision />
                 </div>
-                {task?.steps && task.steps.length > 0 && (
-                  <div className="shrink-0 border-t border-border bg-muted/30 px-4 py-3 overflow-x-auto">
-                    <ExecutionTimeline
-                      steps={task.steps}
-                      onSelectScreenshot={setSelectedStepScreenshot}
-                    />
-                  </div>
-                )}
               </div>
-            ) : (
+            ) : activeMainTab === "history" ? (
               <div key="history" className="flex-1 overflow-y-auto min-h-0">
                 <HistoryView onContinue={() => setActiveMainTab("executor")} />
               </div>
-            )}
+            ) : null}
           </AnimatePresence>
         </div>
         <LogsPanel />

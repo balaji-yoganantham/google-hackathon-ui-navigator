@@ -1,5 +1,5 @@
 """
-Entry-point for UI Navigator backend.
+Entry-point for Percept backend.
 
 Sets WindowsProactorEventLoopPolicy BEFORE uvicorn creates the event loop,
 so Playwright can spawn its Chromium subprocess on Windows.

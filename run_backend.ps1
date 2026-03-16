@@ -1,4 +1,4 @@
-# Run the UI Navigator Python backend (Windows-friendly: uses ProactorEventLoop)
+# Run the Percept Python backend (Windows-friendly: uses ProactorEventLoop)
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $backendDir = Join-Path $scriptDir "backend"
 $venvPython = Join-Path $scriptDir "venv\Scripts\python.exe"

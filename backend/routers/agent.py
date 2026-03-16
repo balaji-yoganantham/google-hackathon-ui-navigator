@@ -410,6 +410,8 @@ def _report_type_subtitle(reports: list) -> str:
         return "Legal Research Report" if n <= 1 else f"Precedent Research Report — {n} Cases"
     if ct == "youtube":
         return "Video Analysis Report"
+    if ct == "qa":
+        return "QA Scan Report" if n <= 1 else f"QA Scan Report — {n} issues"
     return "Legal Research Report" if n <= 1 else f"Extracted Cases ({n})"
 
 
@@ -427,7 +429,7 @@ async def export_docx(session_id: str) -> Response:
     from docx.shared import Pt
 
     doc = Document()
-    doc.add_heading("UI Navigator", 0)
+    doc.add_heading("Percept", 0)
     doc.add_paragraph(_report_type_subtitle(task.reports))
     doc.add_paragraph(f"Generated {dt.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
     doc.add_paragraph()

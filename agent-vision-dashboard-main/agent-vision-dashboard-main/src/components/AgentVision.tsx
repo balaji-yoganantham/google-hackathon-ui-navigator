@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { Activity, Globe, Radio, Wifi, WifiOff } from "lucide-react";
+import { Activity, Globe } from "lucide-react";
 import { useAgentStore } from "@/store/agentStore";
 import { Badge } from "@/components/ui/badge";
 import { toDataUrl } from "@/lib/api";
@@ -83,51 +83,6 @@ export function AgentVision() {
                 {task.startUrl}
               </span>
             )}
-          </div>
-        )}
-
-        {/* WebSocket connection indicator */}
-        {isRunning && !selectedStepScreenshot && (
-          <div className="absolute top-3 left-3 z-10">
-            <Badge
-              variant="outline"
-              className={`gap-1 text-[10px] font-mono ${wsConnected ? 'text-success border-success/30' : 'text-muted-foreground'}`}
-            >
-              {wsConnected
-                ? <Wifi className="h-3 w-3" />
-                : <WifiOff className="h-3 w-3" />}
-              {wsConnected ? 'Stream' : 'Connecting…'}
-            </Badge>
-          </div>
-        )}
-
-        {/* "Back to Live" button when a step screenshot is pinned */}
-        {selectedStepScreenshot && (
-          <button
-            onClick={() => setSelectedStepScreenshot(null)}
-            className="absolute top-3 left-3 z-10 flex items-center gap-1.5 rounded-md bg-card/90 border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors"
-          >
-            <Radio className="h-3 w-3 text-success" />
-            Back to Live
-          </button>
-        )}
-
-        {/* Step label badge when pinned */}
-        {selectedStepScreenshot && (
-          <div className="absolute top-3 right-3 z-10">
-            <Badge variant="outline" className="text-[10px] font-mono bg-card/90">
-              Step preview
-            </Badge>
-          </div>
-        )}
-
-        {/* Status overlay bar at bottom — current action */}
-        {isRunning && task?.steps && task.steps.length > 0 && (
-          <div className="absolute bottom-3 left-3 right-3 z-10 rounded-md bg-black/70 backdrop-blur-sm px-3 py-2 flex items-center gap-2">
-            <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-            <span className="text-xs font-mono text-white/90 truncate">
-              {task.steps[task.steps.length - 1]?.reasoning ?? 'Running…'}
-            </span>
           </div>
         )}
 

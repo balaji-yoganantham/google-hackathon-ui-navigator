@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { useAgentStore } from "@/store/agentStore";
-import { executeTask, continueTask, cancelTask, createSSEStream, pollStatus, transcribeAudio, getReport, type BackendTask } from "@/lib/api";
+import { executeTask, continueTask, cancelTask, createSSEStream, pollStatus, transcribeAudio, getReport, type BackendTask, type BackendStep } from "@/lib/api";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /** Speak text via Web Speech API (for step narration and summary). */
@@ -12,12 +12,37 @@ function speakMessage(text: string) {
   try {
     if (!window.speechSynthesis || !text?.trim()) return;
     window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text.trim().slice(0, 200));
+    const u = new SpeechSynthesisUtterance(text.trim().slice(0, 300));
     u.rate = 1.05;
     u.pitch = 1;
     window.speechSynthesis.speak(u);
   } catch {}
 }
+
+/** Build human-friendly step narration for TTS (e.g. "Typing 'Abdul Kalam'", "Clicking the search box"). */
+function buildStepNarration(step: BackendStep): string {
+  const type = step.action?.type;
+  const cleanReason = (step.reasoning || "").replace(/\[data-visual-agent-id[^\]]*\]/g, "").trim();
+  switch (type) {
+    case "navigate":
+      return `Navigating to ${step.action?.url || "page"}`;
+    case "type":
+      return step.action?.text ? `Typing "${step.action.text}"` : "Typing text";
+    case "click":
+      return cleanReason || "Clicking an element";
+    case "press":
+      return step.action?.key ? `Pressing ${step.action.key}` : "Pressing key";
+    case "scroll":
+      return "Scrolling the page";
+    case "extract":
+      return "Analyzing and extracting page content";
+    default:
+      return cleanReason || `Performing step ${step.stepNumber}`;
+  }
+}
+
+const QA_GOAL =
+  "Run a QA scan on this page. Explore the page (scroll and click key elements if needed). Then extract and list every issue you can find: accessibility (missing alt text, poor contrast, keyboard nav), broken or suspicious links, form or layout problems. For each issue give severity (critical / major / minor) and a short recommendation. Produce a QA issues report.";
 
 export function TaskDock() {
   const {
@@ -25,6 +50,7 @@ export function TaskDock() {
     setTaskDescription, setIsLoading, setIsRecording,
     setTask, updateFromBackendTask, completeTask, failTask, cancelTask: storeCancelTask,
     clearContinue, reset,
+    qaScanRequest, clearQaScanRequest,
   } = useAgentStore();
   const [continueInstruction, setContinueInstruction] = useState("");
   const [volumeLevel, setVolumeLevel] = useState(0);
@@ -70,8 +96,8 @@ export function TaskDock() {
         if (stepCount > lastSpokenStepCountRef.current) {
           for (let i = lastSpokenStepCountRef.current; i < stepCount; i++) {
             const step = steps[i];
-            const text = (step?.result || step?.reasoning || "").trim().slice(0, 80);
-            if (text) speakMessage(`Step ${i + 1}: ${text}`);
+            const narration = buildStepNarration(step);
+            if (narration) speakMessage(narration);
           }
           lastSpokenStepCountRef.current = stepCount;
         }
@@ -84,7 +110,7 @@ export function TaskDock() {
               // ignore
             }
           }
-          const summary = (raw.finalAnswer || "").trim().slice(0, 150) || `Task completed in ${raw.steps?.length ?? 0} steps.`;
+          const summary = (raw.finalAnswer || "").trim().slice(0, 300) || `Task completed in ${raw.steps?.length ?? 0} steps.`;
           speakMessage(raw.reports?.length ? `${summary} Report is ready.` : summary);
           completeTask();
           stopPolling();
@@ -112,8 +138,8 @@ export function TaskDock() {
         if (stepCount > lastSpokenStepCountRef.current) {
           for (let i = lastSpokenStepCountRef.current; i < stepCount; i++) {
             const step = steps[i];
-            const text = (step?.result || step?.reasoning || "").trim().slice(0, 80);
-            if (text) speakMessage(`Step ${i + 1}: ${text}`);
+            const narration = buildStepNarration(step);
+            if (narration) speakMessage(narration);
           }
           lastSpokenStepCountRef.current = stepCount;
         }
@@ -126,7 +152,7 @@ export function TaskDock() {
               // ignore; task already has latest from stream
             }
           }
-          const summary = (raw.finalAnswer || "").trim().slice(0, 150) || `Task completed in ${raw.steps?.length ?? 0} steps.`;
+          const summary = (raw.finalAnswer || "").trim().slice(0, 300) || `Task completed in ${raw.steps?.length ?? 0} steps.`;
           speakMessage(raw.reports?.length ? `${summary} Report is ready.` : summary);
           completeTask();
           cleanupSSERef.current?.();
@@ -254,6 +280,14 @@ export function TaskDock() {
     setTriggerSend(false);
     handleSend();
   }, [triggerSend]); // eslint-disable-line react-hooks/exhaustive-deps -- only run when triggerSend flips
+
+  // ── QA Scan tab: run task when user submitted a URL ─────────────────────────
+  useEffect(() => {
+    if (!qaScanRequest || isLoading) return;
+    const url = qaScanRequest;
+    clearQaScanRequest();
+    runTaskWithGoalAndUrl(QA_GOAL, url);
+  }, [qaScanRequest]); // eslint-disable-line react-hooks/exhaustive-deps -- run when qaScanRequest is set
 
   // ── Voice: MediaRecorder + VAD ─────────────────────────────────────────────
   const cleanupAudio = useCallback(() => {
@@ -481,8 +515,8 @@ export function TaskDock() {
         {/* Main command row — label, input, and buttons on a single aligned grid */}
         <div className="flex flex-col gap-1.5 w-full">
           <div className="flex items-center gap-2">
-            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-              {continuingSessionId ? "Follow-up Instruction" : "AI command"}
+            <label className="text-[11px] font-medium text-muted-foreground tracking-wider">
+              {continuingSessionId ? "Follow-up instruction" : "AI command"}
             </label>
             {isRecording && (
               <Badge className="bg-destructive/20 text-destructive border-destructive/30 text-[10px] gap-1 font-mono">
@@ -504,67 +538,67 @@ export function TaskDock() {
               rows={2}
               disabled={isLoading}
             />
-            {/* Fixed-width button column so Continue row aligns with this row */}
-            <div className="flex items-center gap-2 shrink-0 w-[200px] justify-end h-[52px] items-end pb-0.5">
-            <div className="relative">
-              {isRecording && !isAutoStopping && (
-                <div
-                  className="absolute inset-0 rounded-lg bg-red-500/10 border border-red-400/30 -m-1 transition-transform duration-75"
-                  style={{ transform: `scale(${1 + volumeLevel * 0.5})` }}
-                />
-              )}
-              {isAutoStopping && (
-                <div className="absolute inset-0 rounded-lg bg-emerald-500/20 border border-emerald-400/50 -m-1 animate-ping" />
-              )}
+            {/* Button group: Speak, Send, Stop — min width aligns with Continue row */}
+            <div className="flex items-center gap-2 shrink-0 min-w-[200px] justify-end h-[52px] items-end pb-0.5">
+              <div className="relative">
+                {isRecording && !isAutoStopping && (
+                  <div
+                    className="absolute inset-0 rounded-lg bg-red-500/10 border border-red-400/30 -m-1 transition-transform duration-75"
+                    style={{ transform: `scale(${1 + volumeLevel * 0.5})` }}
+                  />
+                )}
+                {isAutoStopping && (
+                  <div className="absolute inset-0 rounded-lg bg-emerald-500/20 border border-emerald-400/50 -m-1 animate-ping" />
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleSpeak}
+                  className={`relative gap-1.5 text-xs h-9 ${
+                    isAutoStopping
+                      ? "border-emerald-400 text-emerald-600 bg-emerald-500/20"
+                      : isRecording
+                        ? "border-destructive text-destructive bg-destructive/20"
+                        : ""
+                  }`}
+                >
+                  {isAutoStopping ? <Zap className="h-3.5 w-3.5 animate-pulse" /> : <Mic className="h-3.5 w-3.5" />}
+                  {isAutoStopping ? "Sending…" : isRecording ? "Stop" : "Speak"}
+                </Button>
+              </div>
+              <Button
+                size="sm"
+                onClick={handleSend}
+                disabled={isLoading || !taskDescription}
+                className="gap-1.5 text-xs h-9 min-w-[80px] bg-primary hover:bg-primary/90 text-primary-foreground"
+              >
+                {isLoading
+                  ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  : continuingSessionId
+                    ? <RotateCcw className="h-3.5 w-3.5" />
+                    : <Send className="h-3.5 w-3.5" />}
+                {isLoading ? "Running…" : continuingSessionId ? "Continue" : "Send"}
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleSpeak}
-                className={`relative gap-1.5 text-xs h-9 ${
-                  isAutoStopping
-                    ? "border-emerald-400 text-emerald-600 bg-emerald-500/20"
-                    : isRecording
-                      ? "border-destructive text-destructive bg-destructive/20"
-                      : ""
-                }`}
+                onClick={handleStop}
+                disabled={!isLoading}
+                className="gap-1.5 text-xs h-9 border-destructive/50 text-destructive hover:bg-destructive/10"
               >
-                {isAutoStopping ? <Zap className="h-3.5 w-3.5 animate-pulse" /> : <Mic className="h-3.5 w-3.5" />}
-                {isAutoStopping ? "Sending…" : isRecording ? "Stop" : "Speak"}
+                <Square className="h-3 w-3" />
+                Stop
               </Button>
-            </div>
-            <Button
-              size="sm"
-              onClick={handleSend}
-              disabled={isLoading || !taskDescription}
-              className="gap-1.5 text-xs h-9 flex-1 min-w-[80px] bg-primary hover:bg-primary/90 text-primary-foreground"
-            >
-              {isLoading
-                ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                : continuingSessionId
-                  ? <RotateCcw className="h-3.5 w-3.5" />
-                  : <Send className="h-3.5 w-3.5" />}
-              {isLoading ? "Running…" : continuingSessionId ? "Continue" : "Send"}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleStop}
-              disabled={!isLoading}
-              className="gap-1.5 text-xs h-9 border-destructive/50 text-destructive hover:bg-destructive/10"
-            >
-              <Square className="h-3 w-3" />
-              Stop
-            </Button>
             </div>
           </div>
         </div>
 
         {/* Final answer */}
         {task?.finalAnswer && (
-          <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-1.5">
-            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary uppercase tracking-wider">
+            <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-1.5">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-primary tracking-wider">
               <Sparkles className="h-3.5 w-3.5 shrink-0" />
-              Agent Answer
+              Agent answer
             </div>
             <p className="text-sm text-foreground leading-relaxed whitespace-pre-wrap break-words">
               {task.finalAnswer}
@@ -575,7 +609,7 @@ export function TaskDock() {
         {/* Continue in session — same textarea width and Send position as main row */}
         {task?.sessionId && ["completed", "failed", "cancelled"].includes(task.status) && (
           <div className="flex flex-col gap-1.5 w-full">
-            <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+            <label className="text-[11px] font-medium text-muted-foreground tracking-wider">
               Continue in session
             </label>
             <div className="flex items-end gap-2 w-full">
