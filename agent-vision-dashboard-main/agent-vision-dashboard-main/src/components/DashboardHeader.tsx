@@ -10,12 +10,13 @@ import {
 import { Bot, PlusCircle } from "lucide-react";
 import { useAgentStore } from "@/store/agentStore";
 
-export type MainTab = "planner" | "executor" | "history";
+export type MainTab = "planner" | "executor" | "history" | "qaScan";
 
 const TABS: { id: MainTab; label: string }[] = [
   { id: "planner", label: "Planner" },
   { id: "executor", label: "Executor Agents" },
   { id: "history", label: "History" },
+  { id: "qaScan", label: "QA Scan" },
 ];
 
 interface DashboardHeaderProps {

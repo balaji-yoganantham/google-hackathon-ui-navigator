@@ -410,6 +410,8 @@ def _report_type_subtitle(reports: list) -> str:
         return "Legal Research Report" if n <= 1 else f"Precedent Research Report — {n} Cases"
     if ct == "youtube":
         return "Video Analysis Report"
+    if ct == "qa":
+        return "QA Scan Report" if n <= 1 else f"QA Scan Report — {n} issues"
     return "Legal Research Report" if n <= 1 else f"Extracted Cases ({n})"
 
 

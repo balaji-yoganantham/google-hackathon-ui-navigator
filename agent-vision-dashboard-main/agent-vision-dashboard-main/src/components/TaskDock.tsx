@@ -41,12 +41,16 @@ function buildStepNarration(step: BackendStep): string {
   }
 }
 
+const QA_GOAL =
+  "Run a QA scan on this page. Explore the page (scroll and click key elements if needed). Then extract and list every issue you can find: accessibility (missing alt text, poor contrast, keyboard nav), broken or suspicious links, form or layout problems. For each issue give severity (critical / major / minor) and a short recommendation. Produce a QA issues report.";
+
 export function TaskDock() {
   const {
     taskDescription, isLoading, isRecording, task, continuingSessionId, triggerSend, setTriggerSend,
     setTaskDescription, setIsLoading, setIsRecording,
     setTask, updateFromBackendTask, completeTask, failTask, cancelTask: storeCancelTask,
     clearContinue, reset,
+    qaScanRequest, clearQaScanRequest,
   } = useAgentStore();
   const [continueInstruction, setContinueInstruction] = useState("");
   const [volumeLevel, setVolumeLevel] = useState(0);
@@ -276,6 +280,14 @@ export function TaskDock() {
     setTriggerSend(false);
     handleSend();
   }, [triggerSend]); // eslint-disable-line react-hooks/exhaustive-deps -- only run when triggerSend flips
+
+  // ── QA Scan tab: run task when user submitted a URL ─────────────────────────
+  useEffect(() => {
+    if (!qaScanRequest || isLoading) return;
+    const url = qaScanRequest;
+    clearQaScanRequest();
+    runTaskWithGoalAndUrl(QA_GOAL, url);
+  }, [qaScanRequest]); // eslint-disable-line react-hooks/exhaustive-deps -- run when qaScanRequest is set
 
   // ── Voice: MediaRecorder + VAD ─────────────────────────────────────────────
   const cleanupAudio = useCallback(() => {

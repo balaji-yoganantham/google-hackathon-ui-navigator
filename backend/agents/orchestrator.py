@@ -235,8 +235,20 @@ async def _node_extract(state: AgentState) -> dict:
             content_type = "page"
     else:
         content = await browser.get_page_text()
+    # Force QA path when task is a QA scan so client always uses QA prompt and report shape
+    _task_lower = (task_description or "").lower()
+    if any(kw in _task_lower for kw in ("qa scan", "qa scan on", "quality assurance", "run a qa")):
+        content_type = "qa"
+    else:
+        # Fallback: plan may say "extract ... to analyze for QA" even if task_description was lost
+        plan = _get_plan(state)
+        if plan and plan.decisions and plan.decisions[0].action.type == "extract":
+            summary_lower = (plan.summary or "").lower()
+            if "qa" in summary_lower or "quality assurance" in summary_lower:
+                content_type = "qa"
     reports: list[ContentReport] = []
     if content.strip():
+        await asyncio.sleep(2)  # Throttle before Gemini to reduce 429 rate limits
         reports = await gemini.extract_and_analyze(content, content_type, task_description, page_url)
     else:
         reports = [ContentReport(title="No content", url=page_url, content_type=content_type, content="No text could be extracted.")]
@@ -259,7 +271,11 @@ async def _node_extract(state: AgentState) -> dict:
 
     # Set final_answer so UI and TTS have a human-friendly summary (not raw report text)
     _fallback_msg = "Analysis could not be generated. Please try again or rephrase your query."
-    if reports and reports[0].content and reports[0].content.strip() != _fallback_msg:
+    _is_qa_task = content_type == "qa" or any(kw in _task_lower for kw in ("qa scan", "qa scan on", "quality assurance", "run a qa"))
+    first_title = (reports[0].title or "").strip() if reports else ""
+    if _is_qa_task and reports and (first_title == "No issues found" or first_title == "QA Scan Summary"):
+        final_answer = "QA scan complete. You can view the report in the Report tab."
+    elif reports and reports[0].content and reports[0].content.strip() != _fallback_msg:
         report_title = reports[0].title or "the page"
         n = len(reports)
         final_answer = (
@@ -289,6 +305,7 @@ def _is_research_task(desc: str) -> bool:
         "report", "analyze", "summarize", "research", "tell me about",
         "explain", "information about", "details about", "give me a report",
         "search about", "find out about",
+        "qa", "qa scan", "quality assurance",
     )
     return any(kw in d for kw in keywords)
 
