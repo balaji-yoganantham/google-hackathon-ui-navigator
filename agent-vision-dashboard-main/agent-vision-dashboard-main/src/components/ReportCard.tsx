@@ -24,7 +24,7 @@ function reportTypeLabel(reports: ContentReport[]): string {
   const n = reports.length;
   if (ct === "pdf") return n <= 1 ? "Legal Research Report" : `Precedent Research Report — ${n} Cases`;
   if (ct === "youtube") return "Video Analysis Report";
-  return n <= 1 ? "Legal Research Report" : `Extracted Cases (${n})`;
+  return n <= 1 ? "Research Report" : `Research Report — ${n} Sources`;
 }
 
 function sectionLabel(reports: ContentReport[]): string {
@@ -33,7 +33,7 @@ function sectionLabel(reports: ContentReport[]): string {
   const n = reports.length;
   if (ct === "pdf" && n > 1) return `Precedent Research — ${n} Cases`;
   if (ct === "youtube") return "Video Summary";
-  return `Extracted Cases (${n})`;
+  return n > 1 ? `Research — ${n} Sources` : "Research";
 }
 
 export function buildPrintHtml(reports: ContentReport[], goal?: string): string {

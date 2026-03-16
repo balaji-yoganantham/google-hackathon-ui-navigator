@@ -257,14 +257,16 @@ async def _node_extract(state: AgentState) -> dict:
     plan_dict = state.get("plan")
     decision_index = len(plan.decisions) if plan and plan.decisions else idx + 1
 
-    # Set final_answer so UI and TTS have a summary when task completes via extract
+    # Set final_answer so UI and TTS have a human-friendly summary (not raw report text)
     _fallback_msg = "Analysis could not be generated. Please try again or rephrase your query."
     if reports and reports[0].content and reports[0].content.strip() != _fallback_msg:
-        first_content = reports[0].content.strip()
-        if len(first_content) > 300:
-            final_answer = first_content[:297].rsplit(" ", 1)[0] + "..."
-        else:
-            final_answer = first_content
+        report_title = reports[0].title or "the page"
+        n = len(reports)
+        final_answer = (
+            f"Analysis of {report_title} is complete. "
+            f"I have prepared a detailed report with {n} section(s). "
+            "You can view the full report in the Report tab."
+        )
     else:
         final_answer = f"Extraction complete. {len(reports)} report(s) generated."
 
@@ -276,6 +278,19 @@ async def _node_extract(state: AgentState) -> dict:
         "_do_extract": False,
         "decision_index": decision_index,
     }
+
+
+def _is_research_task(desc: str) -> bool:
+    """True if the task description suggests the user wants a report or analysis."""
+    if not desc or not desc.strip():
+        return False
+    d = desc.lower().strip()
+    keywords = (
+        "report", "analyze", "summarize", "research", "tell me about",
+        "explain", "information about", "details about", "give me a report",
+        "search about", "find out about",
+    )
+    return any(kw in d for kw in keywords)
 
 
 def _route_after_plan(state: AgentState) -> Literal["execute_step", "extract", "end"]:
@@ -296,7 +311,15 @@ def _route_after_execute(state: AgentState) -> Literal["execute_step", "plan", "
     if state.get("_do_extract"):
         return "extract"
     status = state.get("status")
-    if status in ("completed", "failed", "cancelled"):
+    if status in ("failed", "cancelled"):
+        return "end"
+    if status == "completed":
+        # Auto-trigger extract when user asked for a report but we completed without one
+        reports = state.get("reports") or []
+        task_desc = state.get("task_description") or ""
+        if not reports and _is_research_task(task_desc):
+            logger.info("[Orchestrator] Completed without reports but task is research-style → routing to EXTRACT")
+            return "extract"
         return "end"
     # Hard limits
     if len(state.get("steps") or []) >= MAX_STEPS:
