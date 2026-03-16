@@ -13,13 +13,28 @@ const API_BASE =
 // ─── Backend types (matching Python schemas.py) ──────────────────────────────
 
 export interface BackendAction {
-  type: 'click' | 'type' | 'scroll' | 'navigate' | 'wait' | 'screenshot' | 'hover' | 'press';
+  type: 'click' | 'type' | 'scroll' | 'navigate' | 'wait' | 'screenshot' | 'hover' | 'press' | 'extract';
   selector?: string;
   text?: string;
   url?: string;
   amount?: number;
   delay?: number;
   key?: string;
+}
+
+export interface ContentReport {
+  title: string;
+  url: string;
+  date?: string;
+  content_type: string;
+  content: string;
+  court?: string;
+  docket?: string;
+}
+
+export interface ExtractionResult {
+  reports: ContentReport[];
+  session_id: string;
 }
 
 export interface BackendStep {
@@ -42,6 +57,7 @@ export interface BackendTask {
   error?: string;
   finalAnswer?: string;       // agent's final answer when task completes with no further actions
   startUrl?: string;
+  reports?: ContentReport[];
   createdAt: string;
   updatedAt: string;
 }
@@ -71,6 +87,7 @@ export function mapBackendTask(raw: BackendTask) {
     error: raw.error,
     finalAnswer: raw.finalAnswer,
     currentScreenshot: raw.currentScreenshot ? toDataUrl(raw.currentScreenshot) : undefined,
+    reports: raw.reports ?? [],
     steps: (raw.steps || []).map((s) => ({
       stepNumber: s.stepNumber,
       actionType: (s.action?.type ?? 'click') as BackendAction['type'],
@@ -85,11 +102,39 @@ export function mapBackendTask(raw: BackendTask) {
 
 // ─── API calls ────────────────────────────────────────────────────────────────
 
-export async function executeTask(taskDescription: string) {
+/** Send raw audio to backend; returns { url, goal } for the agent. */
+export async function transcribeAudio(audioBase64: string, mimeType: string = 'audio/webm'): Promise<{ url: string; goal: string }> {
+  const res = await fetch(`${API_BASE}/api/voice/transcribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ audioBase64, mimeType }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(text || 'Transcription failed');
+  }
+  return res.json();
+}
+
+/** Fetch extraction reports for a session. */
+export async function getReport(sessionId: string): Promise<ExtractionResult> {
+  const res = await fetch(`${API_BASE}/api/agent/report/${sessionId}`);
+  if (!res.ok) throw new Error('Failed to fetch report');
+  return res.json();
+}
+
+/** Download session report as .docx. */
+export async function exportDocx(sessionId: string): Promise<Blob> {
+  const res = await fetch(`${API_BASE}/api/agent/export/${sessionId}`, { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to export report');
+  return res.blob();
+}
+
+export async function executeTask(taskDescription: string, startUrl?: string) {
   const res = await fetch(`${API_BASE}/api/agent/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ taskDescription }),
+    body: JSON.stringify({ taskDescription, startUrl: startUrl ?? '' }),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -115,6 +160,19 @@ export async function cancelTask(sessionId: string) {
   const res = await fetch(`${API_BASE}/api/agent/cancel/${sessionId}`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to cancel task');
   return res.json();
+}
+
+/**
+ * Build the WebSocket URL for the live browser stream of a session.
+ * Handles dev (Vite proxy) and production (direct wss://...) environments.
+ */
+export function getBrowserStreamUrl(sessionId: string): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const apiBase = (import.meta.env.VITE_API_URL ?? '').trim();
+  const wsBase = apiBase
+    ? apiBase.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:')
+    : `${protocol}//${window.location.host}`;
+  return `${wsBase}/api/agent/ws/${sessionId}`;
 }
 
 export function createSSEStream(

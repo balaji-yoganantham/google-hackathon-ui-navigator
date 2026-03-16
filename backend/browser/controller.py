@@ -119,6 +119,121 @@ class BrowserController:
         page = await browser_pool.get_page()
         return page.url
 
+    async def detect_content_type(self) -> str:
+        """Return 'youtube' if on YouTube watch page, 'pdf' if page has PDF links, else 'page'."""
+        page = await browser_pool.get_page()
+        url = page.url or ""
+        if "youtube.com/watch" in url or "youtu.be/" in url:
+            return "youtube"
+        try:
+            has_pdf = await page.evaluate("""() => {
+                const links = document.querySelectorAll('a[href]');
+                for (const a of links) {
+                    const h = (a.getAttribute('href') || '').toLowerCase();
+                    if (h.endsWith('.pdf') || h.includes('.pdf?') || h.includes('.pdf#')) return true;
+                }
+                if (document.querySelector('embed[type="application/pdf"]')) return true;
+                if (document.querySelector('iframe[src*=".pdf"]')) return true;
+                if (document.querySelector('object[data*=".pdf"]')) return true;
+                return false;
+            }""")
+            if has_pdf:
+                return "pdf"
+        except Exception as e:
+            logger.debug("detect_content_type: %s", e)
+        return "page"
+
+    async def get_pdf_url_from_page(self) -> str | None:
+        """Return first PDF link href or embed/iframe src (Citadelle priority order), or None."""
+        page = await browser_pool.get_page()
+        try:
+            return await page.evaluate("""() => {
+                const pdfTab = Array.from(document.querySelectorAll('a')).find(a => {
+                    const text = (a.innerText || '').trim().toLowerCase();
+                    return text === 'pdf' || text === 'view pdf' || text === 'download pdf';
+                });
+                if (pdfTab && pdfTab.href) return pdfTab.href;
+                const hrefPdf = Array.from(document.querySelectorAll('a')).find(a => {
+                    const href = (a.href || '');
+                    return href.includes('/pdf') || href.endsWith('.pdf');
+                });
+                if (hrefPdf && hrefPdf.href) return hrefPdf.href;
+                const exactPdf = document.querySelector('a[href$=".pdf"]');
+                if (exactPdf && exactPdf.href) return exactPdf.href;
+                const anyPdfLink = document.querySelector('a[href*=".pdf"], a[href*="PDF"]');
+                if (anyPdfLink && anyPdfLink.href) return anyPdfLink.href;
+                const dropdownPdf = document.querySelector('div.dropdown-menu a[href*=".pdf"], ul.dropdown-menu a[href*=".pdf"], .dropdown-menu a[href*=".pdf"]');
+                if (dropdownPdf && dropdownPdf.href) return dropdownPdf.href;
+                const embed = document.querySelector('embed[type="application/pdf"], embed[src*=".pdf"]');
+                if (embed && embed.src) return embed.src;
+                const iframe = document.querySelector('iframe[src*=".pdf"]');
+                if (iframe && iframe.src) return iframe.src;
+                const obj = document.querySelector('object[data*=".pdf"]');
+                if (obj && obj.data) return obj.data;
+                return null;
+            }""")
+        except Exception as e:
+            logger.debug("get_pdf_url_from_page: %s", e)
+            return None
+
+    async def download_pdf(self, pdf_url: str) -> bytes:
+        """Download PDF with cookies and 3 fallbacks; validate %PDF header."""
+        page = await browser_pool.get_page()
+        page_url = page.url
+        try:
+            cookies = await page.context.cookies(pdf_url)
+            cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in cookies) if cookies else None
+        except Exception as e:
+            logger.debug("download_pdf cookies: %s", e)
+            cookie_header = None
+        headers = {"Cookie": cookie_header} if cookie_header else None
+
+        body: bytes | None = None
+        try:
+            resp = await page.request.get(pdf_url, headers=headers, timeout=30_000)
+            if resp.ok:
+                body = await resp.body()
+        except Exception as e:
+            logger.debug("download_pdf request.get: %s", e)
+        if body and len(body) >= 500 and b"%PDF" in body[:1024]:
+            return body
+
+        if not body or len(body) < 500:
+            try:
+                req = await page.context.request.get(pdf_url, headers=headers, timeout=30_000)
+                if req.ok:
+                    body = await req.body()
+            except Exception as e:
+                logger.debug("download_pdf context.request: %s", e)
+        if body and len(body) >= 500 and b"%PDF" in body[:1024]:
+            return body
+
+        if not body or len(body) < 500:
+            try:
+                resp = await page.goto(pdf_url, wait_until="domcontentloaded", timeout=15_000)
+                if resp:
+                    body = await resp.body()
+                await page.go_back(wait_until="domcontentloaded", timeout=10_000)
+            except Exception as e:
+                logger.debug("download_pdf goto+goBack: %s", e)
+                try:
+                    await page.goto(page_url, wait_until="domcontentloaded", timeout=10_000)
+                except Exception:
+                    pass
+        if body and len(body) >= 500 and b"%PDF" in body[:1024]:
+            return body
+        logger.warning("download_pdf: could not fetch valid PDF from %s", pdf_url)
+        return b""
+
+    async def get_page_text(self) -> str:
+        """Scrape main text from current page (document.body.innerText)."""
+        page = await browser_pool.get_page()
+        try:
+            return await page.evaluate("() => document.body ? (document.body.innerText || '') : ''")
+        except Exception as e:
+            logger.debug("get_page_text: %s", e)
+            return ""
+
     async def execute_action(self, action: BrowserAction) -> str:
         try:
             return await self._with_page_retry(

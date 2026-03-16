@@ -10,7 +10,7 @@ from urllib.parse import urlparse, urlunparse
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from config import settings
-from models.schemas import GeminiResponse
+from models.schemas import ContentReport, GeminiResponse
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,7 @@ ACTION TYPES:
 - "wait": Delay (optional)
 - "hover": Hover over element
 - "press": Press keyboard key (Enter, Space, Escape, etc)
+- "extract": Extract and analyze content on the current page (PDF, YouTube transcript, or page text). Use when the user asks to summarize, extract, or report on the visible content. No selector needed.
 
 JSON RESPONSE FORMAT:
 {
@@ -77,7 +78,8 @@ CRITICAL RULES:
 ✓ Plan the FULL sequence: return 2-6 decisions when the task needs multiple actions (search = type + submit; form = fill + submit).
 ✓ Set taskComplete=true ONLY when the ENTIRE user goal is done (video playing, result open, etc.). If more steps will be needed from a new page, set taskComplete=false — the system re-plans automatically.
 ✓ Do NOT use a "navigate" decision to a search-URL or filtered-URL; plan from current UI (type in search box, press Enter, click buttons).
-✓ NO markdown code blocks - pure JSON only"""
+✓ NO markdown code blocks - pure JSON only.
+✓ For \"extract\" action use: {\"action\": {\"type\": \"extract\"}, \"reasoning\": \"...\", \"confidence\": 0.9}. No selector or text."""
 
 
 class GeminiClient:
@@ -286,6 +288,218 @@ class GeminiClient:
         except Exception as e:
             logger.warning("[resolve_start_url] Failed to normalize URL %s: %s", url, e)
             return url
+
+    async def parse_audio_command(self, audio_b64: str, mime_type: str = "audio/webm") -> dict:
+        """Send raw audio to Vertex AI Gemini; return {url, goal}. Uses same LLM as plan_task (Vertex or API key)."""
+        if not audio_b64 or len(audio_b64) < 500:
+            raise ValueError("AUDIO_TOO_SHORT")
+
+        prompt = (
+            "Listen to this voice command for a web automation agent. Extract the target URL and the goal. "
+            "Return ONLY JSON with no markdown or code fences: {\"url\": \"https://...\", \"goal\": \"...\"}. "
+            "If the user mentions a website name, construct the full URL (e.g. courtlistener -> https://www.courtlistener.com). "
+            "Default URL to https://www.google.com if no domain is specified. "
+            "Return ONLY the root base URL of the domain (no deep links or search paths). "
+            "Put all search terms and instructions into the goal field. "
+            "If the audio is only silence or unintelligible, return {\"url\": \"\", \"goal\": \"\"}. "
+            "No markdown, no explanation, only JSON."
+        )
+        # LangChain multimodal: same structure as image; Gemini accepts inline_data with any mime_type
+        messages = [
+            HumanMessage(content=[
+                {"type": "image", "base64": audio_b64, "mime_type": mime_type},
+                {"type": "text", "text": prompt},
+            ]),
+        ]
+        response = await self._llm.ainvoke(messages)
+        raw = getattr(response, "content", None) or ""
+        if isinstance(raw, list):
+            raw = "".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in raw
+            )
+        text = (raw or "").strip()
+        if not text:
+            return {"url": "https://www.google.com", "goal": ""}
+        try:
+            parsed = self._parse_json_response(text)
+        except Exception:
+            start, end = text.find("{"), text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                parsed = json.loads(text[start : end + 1])
+            else:
+                return {"url": "https://www.google.com", "goal": ""}
+        url = (parsed.get("url") or "").strip()
+        goal = (parsed.get("goal") or "").strip()
+        if url and not url.lower().startswith("http"):
+            url = self._resolve_spoken_site(url)
+        if not url or not url.lower().startswith("http"):
+            url = "https://www.google.com"
+        return {"url": url, "goal": goal}
+
+    @staticmethod
+    def _resolve_spoken_site(spoken: str) -> str:
+        """Map spoken site name to full URL (port of Citadelle SITE_MAP)."""
+        site_map = {
+            "youtube": "https://www.youtube.com",
+            "wikipedia": "https://www.wikipedia.org",
+            "reddit": "https://www.reddit.com",
+            "twitter": "https://www.twitter.com",
+            "github": "https://www.github.com",
+            "courtlistener": "https://www.courtlistener.com",
+            "court listener": "https://www.courtlistener.com",
+            "oyez": "https://www.oyez.org",
+            "google": "https://www.google.com",
+            "linkedin": "https://www.linkedin.com",
+            "stackoverflow": "https://stackoverflow.com",
+            "stack overflow": "https://stackoverflow.com",
+        }
+        lower = spoken.lower().replace(" ", "").replace(".", "")
+        for name, u in site_map.items():
+            if name.replace(" ", "") in lower or lower in name.replace(" ", ""):
+                return u
+        cleaned = re.sub(r"[^a-zA-Z0-9.-]", "", spoken).lower()
+        if cleaned and len(cleaned) < 50 and re.match(r"^[a-z0-9]", cleaned):
+            return f"https://www.{cleaned if '.' in cleaned else cleaned + '.com'}"
+        return "https://www.google.com"
+
+    # Content-type-specific analysis prompts (Citadelle-style, ~800 words)
+    _PROMPT_PDF = (
+        "You are a Senior Legal Partner at a top-tier law firm. The user's goal is: \"{goal}\". "
+        "Read this official court PDF text and write an EXTENSIVE, highly detailed legal analysis of AT LEAST 800 words "
+        "organized into these sections:\n"
+        "1. CASE BACKGROUND & PARTIES: Who are the parties, what is the dispute about, and what is the factual context?\n"
+        "2. PROCEDURAL HISTORY: How did this case arrive at this court? What happened in lower courts?\n"
+        "3. KEY LEGAL ISSUES: What are the central legal questions the court must resolve?\n"
+        "4. COURT'S ANALYSIS & REASONING: How did the court analyze each issue? What legal tests or standards were applied?\n"
+        "5. IMPORTANT PRECEDENTS CITED: Which prior cases did the court rely on, and how were they applied?\n"
+        "6. CONTRADICTIONS & DISSENTING OPINIONS: Identify any contradictory arguments, conflicting statements, or dissenting opinions.\n"
+        "7. HOLDING & VERDICT: What did the court ultimately decide?\n"
+        "8. PRACTICAL IMPLICATIONS: What does this ruling mean for future cases or parties in similar situations?\n\n"
+        "Write each section as a detailed paragraph. Be thorough — this is for a premium legal intelligence report. "
+        "Return ONLY a valid JSON array with NO markdown: "
+        '[{{"title": "Case Name", "court": "Court", "date": "Date", "docket": "Docket", "content": "Your extensive analysis here with all 8 sections"}}]. '
+        "For list requests, return multiple objects."
+    )
+    _PROMPT_YOUTUBE = (
+        "You are an expert content analyst and researcher. The user's goal is: \"{goal}\". "
+        "Read this YouTube video transcript and write an EXTENSIVE, detailed analysis of AT LEAST 800 words. "
+        "Structure your analysis into these sections:\n"
+        "1. VIDEO OVERVIEW: What is this video about? Who is the speaker/creator and what is the context?\n"
+        "2. MAIN ARGUMENTS & KEY POINTS: What are the primary arguments, claims, or topics discussed? Detail each major point thoroughly.\n"
+        "3. SUPPORTING EVIDENCE & EXAMPLES: What evidence, data, stories, or examples does the speaker use to support their points?\n"
+        "4. NOTABLE QUOTES & MOMENTS: Highlight any particularly impactful statements or pivotal moments in the video.\n"
+        "5. CRITICAL ANALYSIS: What are the strengths and weaknesses of the arguments presented? Are there any biases or gaps?\n"
+        "6. CONCLUSIONS & TAKEAWAYS: What are the final conclusions, and what should the viewer take away from this content?\n\n"
+        "Write each section as a detailed paragraph. Be thorough — this is for a premium intelligence report. "
+        "For the court field use the format \"Channel: <channel name>\" when you know the channel; otherwise \"Channel: Unknown\". "
+        "Return ONLY a valid JSON array with no markdown: "
+        '[{{"title": "...", "court": "Channel: ...", "date": "... or null", "docket": "", "content": "Your extensive 6-section analysis here"}}].'
+    )
+    _PROMPT_PAGE = (
+        "You are a Senior Legal Analyst preparing a premium intelligence report. The user's goal is: \"{goal}\". "
+        "Read this webpage text and write an EXTENSIVE, detailed analysis of AT LEAST 800 words. "
+        "Structure your analysis into these sections:\n"
+        "1. CASE BACKGROUND & PARTIES: Identify all parties and the nature of the dispute (or for non-legal pages: overview and key figures)\n"
+        "2. PROCEDURAL HISTORY: How the case progressed (or: key events and timeline)\n"
+        "3. KEY LEGAL ISSUES: The central legal questions (or: main topics and arguments)\n"
+        "4. ANALYSIS & REASONING: How the court or parties addressed each issue (or: detailed analysis)\n"
+        "5. IMPORTANT PRECEDENTS: Any cited cases or authorities (or: sources and references)\n"
+        "6. HOLDING & VERDICT: The final decision (or: conclusions)\n"
+        "7. PRACTICAL IMPLICATIONS: What this means going forward\n\n"
+        "Write each section as a thorough paragraph. Ignore UI menus, navigation links, and ads. "
+        "The content field must be YOUR written analysis/summary only — do NOT copy or paste raw webpage text. "
+        "Return ONLY a valid JSON array with no markdown: "
+        '[{{"title": "Case Name", "court": "Court", "date": "Date", "docket": "Docket Number", "content": "Your extensive 7-section analysis here"}}]. '
+        "For list requests, return multiple objects."
+    )
+    _PROMPT_PAGE_SIMPLE = (
+        "The user's goal is: \"{goal}\". "
+        "Read the webpage text below and give a direct, brief answer in 1 to 3 sentences (e.g. price, product name, availability, or what was found). "
+        "Ignore menus, navigation, and ads. Do NOT write a long analysis. "
+        "Return ONLY a single JSON object with no markdown and no code fences: "
+        '{{"title": "Short title for the result", "content": "Your 1-3 sentence answer here."}}'
+    )
+
+    async def extract_and_analyze(
+        self, content: str, content_type: str, goal: str, page_url: str = ""
+    ) -> list[ContentReport]:
+        """Send extracted text/transcript to Vertex AI; return structured report list (content-type-specific prompts)."""
+        if not content or not content.strip():
+            return [ContentReport(title="No content", url=page_url, content_type=content_type, content="No text extracted.")]
+        ct = (content_type or "page").lower()
+        if ct == "pdf":
+            prompt_template = self._PROMPT_PDF
+        elif ct == "youtube":
+            prompt_template = self._PROMPT_YOUTUBE
+        else:
+            # Use short-answer prompt for simple lookups (price, find, search and tell, etc.)
+            goal_lower = (goal or "").lower()
+            simple_keywords = ("price", "cost", "how much", "find the", "search and tell", "what is the", "tell me the", "get the")
+            is_simple_lookup = len(goal_lower) < 80 and any(kw in goal_lower for kw in simple_keywords)
+            prompt_template = self._PROMPT_PAGE_SIMPLE if is_simple_lookup else self._PROMPT_PAGE
+        prompt = prompt_template.format(goal=goal) + "\n\n---\n" + content[:120000]
+        messages = [HumanMessage(content=prompt)]
+        response = await self._llm.ainvoke(messages)
+        raw = getattr(response, "content", None) or ""
+        if isinstance(raw, list):
+            raw = "".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in raw
+            )
+        text = (raw or "").strip()
+        _fallback_msg = "Analysis could not be generated. Please try again or rephrase your query."
+        if not text:
+            logger.warning("[extract_and_analyze] Model returned empty response for content_type=%s", content_type)
+            return [ContentReport(title="Analysis", url=page_url, content_type=content_type, content=_fallback_msg)]
+        # Strip markdown code fences (Citadelle-style robust parsing)
+        stripped = text.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+            stripped = re.sub(r"\s*```\s*$", "", stripped).strip()
+        parsed: list = []
+        attempts = [stripped, text.strip()]
+        for s in attempts:
+            try:
+                if s.startswith("["):
+                    start, end = s.find("["), s.rfind("]")
+                    if start != -1 and end > start:
+                        parsed = json.loads(s[start : end + 1])
+                        if isinstance(parsed, list) and parsed:
+                            break
+                arr_match = re.search(r"\[[\s\S]*\]", s)
+                if arr_match:
+                    parsed = json.loads(arr_match.group(0))
+                    if isinstance(parsed, list) and parsed:
+                        break
+            except (json.JSONDecodeError, ValueError):
+                continue
+        if not parsed or not isinstance(parsed, list):
+            try:
+                single = self._parse_json_response(stripped)
+                if single and isinstance(single, dict) and (single.get("title") or single.get("content")):
+                    parsed = [single]
+            except Exception:
+                pass
+        if not isinstance(parsed, list):
+            parsed = []
+        reports = []
+        for item in parsed:
+            if isinstance(item, dict):
+                content = item.get("content") or item.get("summary") or item.get("analysis") or ""
+                reports.append(ContentReport(
+                    title=item.get("title") or "Report",
+                    url=item.get("url") or page_url,
+                    date=item.get("date"),
+                    content_type=item.get("content_type") or content_type,
+                    content=content,
+                    court=item.get("court"),
+                    docket=item.get("docket"),
+                ))
+        if not reports:
+            logger.warning("[extract_and_analyze] No valid report objects in model response")
+            return [ContentReport(title="Analysis", url=page_url, content_type=content_type, content=_fallback_msg)]
+        return reports
 
     @staticmethod
     def _parse_json_response(raw: str) -> dict:
