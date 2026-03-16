@@ -94,6 +94,8 @@ screenshots/
 *.gif
 *.bmp
 *.webp
+# Allow committed docs/assets (e.g. architecture diagram)
+!architecture diagram.png
 
 # Playwright
 /test-results/
