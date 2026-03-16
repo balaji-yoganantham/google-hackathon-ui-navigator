@@ -10,7 +10,7 @@
 [![Cloud Run](https://img.shields.io/badge/Google%20Cloud%20Run-Backend-4285F4?logo=googlecloud)](https://cloud.google.com/run)
 [![Firebase](https://img.shields.io/badge/Firebase-Hosting-FFCA28?logo=firebase&logoColor=black)](https://firebase.google.com)
 
-| [Demo Video](https://youtube.com) | [Live App](https://project-70591921.web.app) | [Architecture Diagram](#architecture-overview) |
+| [Demo Video](https://youtube.com) | [Live website](https://project-70591921-7d7a-4043-ba8.web.app/) | [Architecture Diagram](#architecture-overview) |
 
 ---
 
