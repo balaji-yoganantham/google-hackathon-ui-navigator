@@ -78,7 +78,7 @@ export function FullReportView({ onClose }: { onClose: () => void }) {
             Intelligence Division
           </div>
           <h1 className="text-3xl font-extrabold text-white tracking-wide mt-2 mb-1">
-            UI Navigator
+            Percept
           </h1>
           <p className="text-base text-white/60 mb-4">
             {reportTypeLabel(reports)}

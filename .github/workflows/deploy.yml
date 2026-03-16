@@ -7,8 +7,8 @@ on:
 env:
   PROJECT_ID: project-70591921-7d7a-4043-ba8
   REGION: us-central1
-  AR_REPO: ui-navigator
-  SERVICE_NAME: ui-navigator-backend
+  AR_REPO: percept
+  SERVICE_NAME: percept-backend
 
 jobs:
   deploy-backend:

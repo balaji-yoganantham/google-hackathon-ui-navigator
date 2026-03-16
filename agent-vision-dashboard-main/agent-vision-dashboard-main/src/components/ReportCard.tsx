@@ -84,7 +84,7 @@ export function buildPrintHtml(reports: ContentReport[], goal?: string): string 
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>UI Navigator Report</title>
+<title>Percept Report</title>
 <style>
   @media print {
     body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -97,7 +97,7 @@ export function buildPrintHtml(reports: ContentReport[], goal?: string): string 
 <body>
 <div style="background:#0B132B;padding:48px 32px 40px;text-align:center;">
   <div style="font-size:13px;letter-spacing:6px;color:rgba(255,255,255,0.4);text-transform:uppercase;margin-bottom:8px;">Intelligence Division</div>
-  <h1 style="font-size:36px;font-weight:800;color:#ffffff;letter-spacing:2px;margin-bottom:6px;">UI Navigator</h1>
+  <h1 style="font-size:36px;font-weight:800;color:#ffffff;letter-spacing:2px;margin-bottom:6px;">Percept</h1>
   <p style="font-size:16px;color:rgba(255,255,255,0.6);margin-bottom:20px;">${escapeHtml(reportTypeLabel(reports))}</p>
   <div style="font-size:13px;color:rgba(255,255,255,0.35);">Generated ${dateStr}</div>
 </div>

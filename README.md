@@ -1,4 +1,4 @@
-# UI Navigator — Visual Agent
+# Percept — Visual Agent
 
 *A multimodal AI agent that sees and operates the web like a human.*
 
@@ -22,7 +22,7 @@ Traditional web automation relies on **CSS selectors** and **XPath**. When a sit
 
 ### How Visual Reasoning Fixes It
 
-UI Navigator uses **zero-shot visual planning**: the agent receives a live JPEG screenshot of the page and a natural-language task. **Gemini 2.5 Flash** reasons over what it *sees*—buttons, forms, labels—and outputs structured actions (click element 7, type in 12, scroll). No selectors are hardcoded. When the UI changes, the same agent still works because it interprets the current pixels, not the DOM tree.
+Percept uses **zero-shot visual planning**: the agent receives a live JPEG screenshot of the page and a natural-language task. **Gemini 2.5 Flash** reasons over what it *sees*—buttons, forms, labels—and outputs structured actions (click element 7, type in 12, scroll). No selectors are hardcoded. When the UI changes, the same agent still works because it interprets the current pixels, not the DOM tree.
 
 ---
 
@@ -138,7 +138,7 @@ npm run dev
 
 - **Frontend** — Firebase Hosting. Build with `npm run build` in the dashboard app, then `firebase deploy`. SPA: all routes rewrite to `index.html`.
 
-- **Live backend (example):** `https://ui-navigator-backend-94139147538.us-central1.run.app`  
+- **Live backend (example):** `https://percept-backend-94139147538.us-central1.run.app`  
 - **GCP project (example):** `project-70591921`
 
 ---

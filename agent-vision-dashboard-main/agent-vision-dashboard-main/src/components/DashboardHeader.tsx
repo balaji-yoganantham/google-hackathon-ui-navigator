@@ -42,7 +42,7 @@ export function DashboardHeader({ activeTab, onTabChange }: DashboardHeaderProps
         <div className="flex items-center gap-2.5">
           <Bot className="h-7 w-7 text-primary" />
           <span className="text-base font-semibold text-foreground tracking-tight">
-            UI Navigator
+            Percept
           </span>
         </div>
 

@@ -429,7 +429,7 @@ async def export_docx(session_id: str) -> Response:
     from docx.shared import Pt
 
     doc = Document()
-    doc.add_heading("UI Navigator", 0)
+    doc.add_heading("Percept", 0)
     doc.add_paragraph(_report_type_subtitle(task.reports))
     doc.add_paragraph(f"Generated {dt.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
     doc.add_paragraph()
