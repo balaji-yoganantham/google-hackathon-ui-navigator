@@ -14,7 +14,7 @@ from models.schemas import GeminiResponse
 
 logger = logging.getLogger(__name__)
 
-SYSTEM_PROMPT = """You are Wayfinder AI, an intelligent web automation agent with exceptional visual understanding capabilities.
+SYSTEM_PROMPT = """You are Visual Agent, an intelligent web automation agent with exceptional visual understanding capabilities.
 
 Your role:
 1. Analyze website screenshots to understand the UI layout and available actions
@@ -49,7 +49,7 @@ NAVIGATION RULES (step-by-step like a user):
 - Prefer: type + press Enter (or click search button). Use "navigate" only when the user explicitly requests opening a specific URL.
 
 ACTION TYPES:
-- "click": Click element [data-wayfinder-id='X'] where X is the red label number
+- "click": Click element [data-visual-agent-id='X'] where X is the red label number
 - "type": Type text into input field (selector and text required)
 - "scroll": Scroll the page (helpful for finding labels)
 - "navigate": Go to URL directly — use ONLY when user explicitly asks to open a specific URL; do not use for search/filter deep links
@@ -60,7 +60,7 @@ ACTION TYPES:
 JSON RESPONSE FORMAT:
 {
   "decisions": [
-    {"action": {"type": "type", "selector": "[data-wayfinder-id=\"10\"]", "text": "query"}, "reasoning": "...", "confidence": 0.9},
+    {"action": {"type": "type", "selector": "[data-visual-agent-id=\"10\"]", "text": "query"}, "reasoning": "...", "confidence": 0.9},
     {"action": {"type": "press", "key": "Enter"}, "reasoning": "Submit search", "confidence": 0.9}
   ],
   "summary": "brief overall strategy",
@@ -69,10 +69,10 @@ JSON RESPONSE FORMAT:
 }
 - "decisions" = the FULL plan: list ALL steps needed to complete the task in order (e.g. for search: step 1 type, step 2 press Enter or click search). Do NOT return only one step when the task needs multiple.
 - For "Search for X and tell me results": include at least 2 decisions: (1) type X in search box, (2) press Enter or click search button. Set taskComplete=true only on the last decision.
-- Example selector for red number 10: "selector": "[data-wayfinder-id=\"10\"]" (not just "10").
+- Example selector for red number 10: "selector": "[data-visual-agent-id=\"10\"]" (not just "10").
 
 CRITICAL RULES:
-✓ SELECTOR: Use ONLY [data-wayfinder-id="N"] where N is the red number on the element. NEVER use aria-label, class, id, or any other selector.
+✓ SELECTOR: Use ONLY [data-visual-agent-id="N"] where N is the red number on the element. NEVER use aria-label, class, id, or any other selector.
 ✓ Always mention the label number in reasoning (e.g. "Type into search box labeled 10").
 ✓ Plan the FULL sequence: return 2-6 decisions when the task needs multiple actions (search = type + submit; form = fill + submit).
 ✓ Set taskComplete=true ONLY when the ENTIRE user goal is done (video playing, result open, etc.). If more steps will be needed from a new page, set taskComplete=false — the system re-plans automatically.
@@ -154,7 +154,7 @@ class GeminiClient:
             "Analyze the screenshot (red numbers are interactive elements). "
             "Determine the NEXT action(s) needed to make progress — do NOT redo any already-completed step. "
             "Return a JSON object with 'decisions', 'summary', 'taskComplete', and optionally 'nextSteps'. "
-            "Use [data-wayfinder-id='N'] for selectors. One action per decision for this step."
+            "Use [data-visual-agent-id='N'] for selectors. One action per decision for this step."
         )
         # Minimal fallback prompt — still includes URL + history so the model doesn't lose context
         minimal_prompt = (
@@ -162,7 +162,7 @@ class GeminiClient:
             "Look at the screenshot and decide the NEXT single action to make progress. "
             "Do NOT repeat any step already listed above. "
             "Return ONLY a raw JSON object (no markdown) in this exact shape:\n"
-            "{\"decisions\":[{\"action\":{\"type\":\"click\",\"selector\":\"[data-wayfinder-id=\\\"N\\\"]\"},"
+            "{\"decisions\":[{\"action\":{\"type\":\"click\",\"selector\":\"[data-visual-agent-id=\\\"N\\\"]\"},"
             "\"reasoning\":\"reason\",\"confidence\":0.9}],\"summary\":\"...\",\"taskComplete\":false}"
         )
 

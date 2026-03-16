@@ -12,18 +12,18 @@ from utils.browser_pool import browser_pool
 logger = logging.getLogger(__name__)
 
 DEFAULT_SCREENSHOT_QUALITY = 60
-REMOVE_LABELS_SCRIPT = "document.querySelectorAll('.wayfinder-label').forEach(el => el.remove());"
+REMOVE_LABELS_SCRIPT = "document.querySelectorAll('.visual-agent-label').forEach(el => el.remove());"
 
 
-def _normalize_wayfinder_selector(selector: str | None) -> str | None:
-    """If the model returns only the label number (e.g. '10'), convert to [data-wayfinder-id='10']."""
+def _normalize_visual_agent_selector(selector: str | None) -> str | None:
+    """If the model returns only the label number (e.g. '10'), convert to [data-visual-agent-id='10']."""
     if not selector or not str(selector).strip():
         return selector
     s = str(selector).strip()
-    if s.startswith("[data-wayfinder-id="):
+    if s.startswith("[data-visual-agent-id="):
         return s
     if s.isdigit():
-        return f'[data-wayfinder-id="{s}"]'
+        return f'[data-visual-agent-id="{s}"]'
     return s
 
 
@@ -178,7 +178,7 @@ class BrowserController:
         action: BrowserAction,
         **kwargs: object,
     ) -> str:
-        selector = _normalize_wayfinder_selector(action.selector) if action.selector else None
+        selector = _normalize_visual_agent_selector(action.selector) if action.selector else None
         t = action.type
         if t == "click":
             if not selector:

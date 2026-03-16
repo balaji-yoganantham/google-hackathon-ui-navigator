@@ -41,7 +41,7 @@ class ExecutorAgent:
         opts = screenshot_options or {"quality": 60, "clip_to_viewport": True}
         logger.info("[ExecutorAgent] Executing action: type=%s selector=%s", action.type, getattr(action, "selector", None))
 
-        # Re-add wayfinder labels so [data-wayfinder-id='N'] selectors exist at execution time
+        # Re-add Visual Agent labels so [data-visual-agent-id='N'] selectors exist at execution time
         await self._browser.add_labels()
         # Capture before-action screenshot (clean, no labels)
         await self._browser.remove_labels()

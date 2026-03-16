@@ -17,7 +17,7 @@ export function DashboardHeader() {
           <Bot className="h-6 w-6 text-primary" />
           <div>
             <h1 className="text-sm font-semibold text-foreground leading-none">UI Navigator</h1>
-            <p className="text-xs text-muted-foreground mt-0.5">Gemini Visual Agent</p>
+            <p className="text-xs text-muted-foreground mt-0.5">Visual Agent</p>
           </div>
         </div>
         <Badge variant="outline" className="text-[10px] font-mono border-primary/30 text-primary px-1.5 py-0">

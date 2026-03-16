@@ -1,21 +1,21 @@
 (function() {
   // Remove red-number overlay divs from any previous labeling run
-  document.querySelectorAll('.wayfinder-label').forEach(el => el.remove());
+  document.querySelectorAll('.visual-agent-label').forEach(el => el.remove());
 
-  // CRITICAL: Clear all stale data-wayfinder-id attributes from every element in the
+  // CRITICAL: Clear all stale data-visual-agent-id attributes from every element in the
   // DOM before assigning new IDs. Without this, elements that were labeled in a
   // previous round (e.g. dropdown <li> items that are now hidden) keep their old IDs.
   // When the same numeric ID is re-assigned to a different element in the next round,
   // Playwright finds 2 matches for the same selector and times out on the wrong one.
-  document.querySelectorAll('[data-wayfinder-id]').forEach(el => {
-    el.removeAttribute('data-wayfinder-id');
-    el.removeAttribute('data-wayfinder-label');
-    el.removeAttribute('data-wayfinder-name');
-    el.removeAttribute('data-wayfinder-placeholder');
-    el.removeAttribute('data-wayfinder-type');
-    el.removeAttribute('data-wayfinder-role');
-    el.removeAttribute('data-wayfinder-tag');
-    el.removeAttribute('data-wayfinder-required');
+  document.querySelectorAll('[data-visual-agent-id]').forEach(el => {
+    el.removeAttribute('data-visual-agent-id');
+    el.removeAttribute('data-visual-agent-label');
+    el.removeAttribute('data-visual-agent-name');
+    el.removeAttribute('data-visual-agent-placeholder');
+    el.removeAttribute('data-visual-agent-type');
+    el.removeAttribute('data-visual-agent-role');
+    el.removeAttribute('data-visual-agent-tag');
+    el.removeAttribute('data-visual-agent-required');
   });
 
   function normalizeText(value) {
@@ -103,7 +103,7 @@
     const requiredAttr = el.required || el.getAttribute('aria-required') === 'true' ? 'true' : 'false';
 
     const label = document.createElement('div');
-    label.className = 'wayfinder-label';
+    label.className = 'visual-agent-label';
     label.textContent = id.toString();
     Object.assign(label.style, {
       position: 'absolute',
@@ -121,15 +121,15 @@
     });
 
     document.body.appendChild(label);
-    el.setAttribute('data-wayfinder-id', id.toString());
+    el.setAttribute('data-visual-agent-id', id.toString());
     const labelText = getAssociatedLabelText(el);
-    if (labelText) el.setAttribute('data-wayfinder-label', labelText);
-    if (nameAttr) el.setAttribute('data-wayfinder-name', nameAttr);
-    if (placeholderAttr) el.setAttribute('data-wayfinder-placeholder', placeholderAttr);
-    if (typeAttr) el.setAttribute('data-wayfinder-type', typeAttr);
-    if (roleAttr) el.setAttribute('data-wayfinder-role', roleAttr);
-    if (tagName) el.setAttribute('data-wayfinder-tag', tagName);
-    el.setAttribute('data-wayfinder-required', requiredAttr);
+    if (labelText) el.setAttribute('data-visual-agent-label', labelText);
+    if (nameAttr) el.setAttribute('data-visual-agent-name', nameAttr);
+    if (placeholderAttr) el.setAttribute('data-visual-agent-placeholder', placeholderAttr);
+    if (typeAttr) el.setAttribute('data-visual-agent-type', typeAttr);
+    if (roleAttr) el.setAttribute('data-visual-agent-role', roleAttr);
+    if (tagName) el.setAttribute('data-visual-agent-tag', tagName);
+    el.setAttribute('data-visual-agent-required', requiredAttr);
   });
 
   return elements.length;
